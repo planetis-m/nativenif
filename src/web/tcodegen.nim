@@ -152,4 +152,20 @@ console.log(U8[$6]);
   expect "engine reads the image back", strip(r.output),
     "14\nhello jorogumo\ntrue\n4294967296\n7,8,9\n1,0\n0"
 
+  # The frame plan and the lowering walk the same tree. An `importjs` string
+  # splice is no call, so it has no sret slot; a slot planned for it shifted
+  # every later temporary (a 12-byte constructor met an 8-byte slot).
+  # `fixtures/tsplice.c.nif` splices a string, builds a pair of strings and
+  # passes a constructor to a call; 3 + 3 + (5 + 7 + 11) is the exit code.
+  let splicePath = path.parentDir / "tsplice.c.nif"
+  var sbuf = parseFromFile(splicePath, sharedTags = tags)
+  var sm = default(WebModule)
+  var stree = generate(sbuf, splicePath, tags, wtJs, sm)
+  let spliceJs = getTempDir() / "jorogumo_splice_" & $getCurrentProcessId() & ".js"
+  writeFile(spliceJs, renderJs(stree, sm, 64 * 1024 * 1024, 64 * 1024))
+  defer: removeFile(spliceJs)
+  let sr = execCmdEx(nodeExe & " " & quoteShell(spliceJs))
+  check "splice then constructors: the plan matches the lowering",
+    sr.exitCode == 29, "exit " & $sr.exitCode & "\n" & sr.output
+
 echo "tcodegen: all checks passed"

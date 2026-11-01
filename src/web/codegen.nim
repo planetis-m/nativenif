@@ -1514,31 +1514,21 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
                                                # by the generic walk below
     # fall through: the generic walk plans the action and the argument copies
   var nest = needsTemp
-  let isCtorNode = c.exprKind in {OconstrC, AconstrC}
-  if isCtorNode and needsTemp:
-    let sz = constrSize(g, c)
-    let al = byteAlign(g, ctorType(g, c))
-    pl.off = align(pl.off, al)
-    g.p.tmpPlan.add TempSlot(off: pl.off, size: sz)
-    pl.off += max(sz, 8)
-    nest = false                             # nested constructors fill in place
-  else:
-    let (dsz, dal) = callDestSize(g, c)
-    if dsz > 0:
-      pl.off = align(pl.off, dal)
-      g.p.tmpPlan.add TempSlot(off: pl.off, size: dsz)
-      pl.off += max(dsz, 8)
-  # An `importjs` splice takes bridge-typed arguments (string, cstring, handle,
-  # callback) as JS values, NOT as fresh Nim copies — `genCallArgs` emits the
-  # conversion instead of `genAggArg`. The plan must skip those reservations or
-  # the two walks desynchronize.
+  # An `importjs` splice is no call: its result is the JS value `jsToNimStr`
+  # (or `ewrap`) wraps in place, so it has no sret destination, and it takes
+  # bridge-typed arguments (string, cstring, handle, callback) as JS values,
+  # NOT as fresh Nim copies — `genCallArgs` emits the conversion instead of
+  # `genAggArg`. The plan must skip those reservations or the two walks
+  # desynchronize.
   var spliceBridges: seq[JsBridgeKind] = default(seq[JsBridgeKind])
+  var isSplice = false
   if c.exprKind == CallC:
     var tg = sub(c)
     if tg.kind == Symbol:
       var found = false
       let decl = procDeclOf(g, symId(tg), found)
       if found and not hasBody(decl) and hasPragma(decl, ImportjsP):
+        isSplice = true
         var p = decl
         p.into:
           inc p                                # name
@@ -1553,6 +1543,20 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
               skip p
           skip p                                 # result type
           while p.hasMore: skip p                # pragmas, body
+  let isCtorNode = c.exprKind in {OconstrC, AconstrC}
+  if isCtorNode and needsTemp:
+    let sz = constrSize(g, c)
+    let al = byteAlign(g, ctorType(g, c))
+    pl.off = align(pl.off, al)
+    g.p.tmpPlan.add TempSlot(off: pl.off, size: sz)
+    pl.off += max(sz, 8)
+    nest = false                             # nested constructors fill in place
+  elif not isSplice:
+    let (dsz, dal) = callDestSize(g, c)
+    if dsz > 0:
+      pl.off = align(pl.off, dal)
+      g.p.tmpPlan.add TempSlot(off: pl.off, size: dsz)
+      pl.off += max(dsz, 8)
   var t = c
   t.into:
     var idx = 0                                # child 0 is the target, not an arg;
@@ -3691,6 +3695,12 @@ proc lowerProc(g: var WebGen; sym: SymId; decl: Cursor) =
   if body.kind == TagLit:
     var b = body
     while b.hasMore: genStmt(g, b)
+  # `takeTemp` only compares sizes, so a slot nobody took would pass while
+  # every later one of the same size is read at the wrong offset. Both walks
+  # must end together.
+  if g.p.tmpAt != g.p.tmpPlan.len:
+    err g, "internal: " & $(g.p.tmpPlan.len - g.p.tmpAt) &
+           " planned temporaries unused in `" & poolSym(g.irPool, g.p.irName) & "`"
   leaveFrame(g)
   if g.p.sret:
     # Reached only by a body that falls off its end without a `ret`; the slot
