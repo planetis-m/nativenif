@@ -270,7 +270,8 @@ if nodeExe.len > 0:
 # that takes a `cstring` with null (the nil cstring, +1) and with "abc" three
 # times (borrowed bytes in the wrapper's frame, NUL-terminated, +2 each); a nil
 # stored proc, a nil cstring and a splice returning null reach JS as null
-# (+16, +32, +64).
+# (+16, +32, +64); one Nim proc handed over as a stored value and as a
+# named proc is the same JS function (+128).
 let nlPath = path.parentDir / "tcnil.c.nif"
 var nlBuf = parseFromFile(nlPath, sharedTags = tags)
 var nlMod = default(WebModule)
@@ -281,7 +282,7 @@ if nodeExe.len > 0:
   let nlr = execCmdEx(nodeExe & " " & quoteShell(nlJs))
   removeFile(nlJs)
   check "null at the bridge: nil cstring, nil proc, callback cstring in the frame",
-    nlr.exitCode == 119, "exit " & $nlr.exitCode & "\n" & nlr.output
+    nlr.exitCode == 247, "exit " & $nlr.exitCode & "\n" & nlr.output
 
 # A plain aggregate has no JS spelling as a splice RESULT (an argument is its
 # address): refused, naming the proc, rather than read back as garbage.

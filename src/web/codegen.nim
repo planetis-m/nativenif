@@ -2434,17 +2434,6 @@ proc proctypeSig(g: var WebGen; pt: Cursor): (seq[Cursor], Cursor) =
   skip p                                     # past PARAMS (a tag or a DotToken)
   (params, p)                                # p is now the RET child
 
-proc operandProcSym(g: var WebGen; t: Cursor): SymId =
-  ## The proc symbol a callback operand names: a bare proc Symbol, or one under
-  ## `(addr …)`/`(haddr …)`. Empty when it is not a direct proc reference — a
-  ## stored fn-ptr or a closure literal — which a bridged wrapper cannot target.
-  result = default(SymId)
-  var c = t
-  while c.kind == TagLit and c.exprKind in {AddrC, HaddrC}:
-    inc c
-  if c.kind == Symbol and lookupSym(typeCtx(g), c.symId).cat == scProc:
-    result = symId(c)
-
 proc stringHelper(g: var WebGen; strType: Cursor; base, cname: string): SymId =
   ## The proc named `base` that the module declaring `string` exports as
   ## `cname` (`=destroy` is `nimStrDestroy`, `nimStrBeginStore` is its own
@@ -2532,6 +2521,14 @@ proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
       result.add dn & "(f + " & $(8 * k) & "); "
   result.add "leave(); return v;"
 
+proc callbackWrapperText(w, body: string): string =
+  ## The JS wrapper `w(i)` for table slot `i`: null for the nil proc, else the
+  ## one function that bridges a JS call to the proc, made on first use.
+  "const " & w & "_m = new Map();\n" &
+  "function " & w & "(i) { if (i === 0) return null; let f = " & w & "_m.get(i); " &
+  "if (f === undefined) { const slot = FTAB[i]; f = (...a) => { " & body &
+  " }; " & w & "_m.set(i, f); } return f; }\n"
+
 proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
   ## setTimeout, a DOM listener). The JS host calls it with plain JS values; we
@@ -2607,7 +2604,6 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # bridged around the value the operand evaluates to — `FTAB[h]` is the Nim
   # proc itself, so only the arguments need converting. A capturing closure
   # stays out of reach: jorogumo carries no environment.
-  let sym = operandProcSym(g, t)
   var destroy = SymId(0)
   var storeProcs = ""                      # `nimStrBeginStore, nimStrEndStore`
   if not strTy.cursorIsNil:
@@ -2617,28 +2613,26 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   if not strRet.cursorIsNil:
     # the hidden result slot comes first, after the argument slots in the frame
     argExprs.insert "f + " & $(8 * strArgs.len), 0
-  if sym == SymId(0):
-    let w = "__cb" & $g.callbacks.len
-    let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
-                            strRet, destroy, strArgs, cstrArgs, storeProcs)
-    g.callbacks.add "function " & w & "(i) { if (i === 0) return null; " &
-                    "const slot = FTAB[i]; return (...a) => { " & body & " }; }\n"
-    g.outp.openTree Call
-    g.outp.ident w
-    genExpr(g, t)
-    g.outp.closeTag
-    return
-  var found = false
-  let cdecl = procDeclOf(g, sym, found)
-  if not found: err g, "unknown callback proc: " & poolSym(g.lengPool, sym)
-  ensureProc(g, sym, cdecl)
-  let w = "__cb" & $g.callbacks.len
-  let call = poolSym(g.irPool, irName(g, sym)) & "(" & argExprs.join(", ") & ")"
-  # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
-  # declares; the extras are simply not forwarded.
-  g.callbacks.add "function " & w & "(...a) { " &
-                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, cstrArgs, storeProcs) & " }\n"
+  # A named proc and a stored fn-ptr take the same path: the operand evaluates
+  # to a table slot, and the wrapper for a slot is built ONCE and memoized, so
+  # handing the same Nim proc to JS twice (addEventListener, then
+  # removeEventListener) gives JS the same function. Two sites with the same
+  # bridging share one wrapper. The extra arguments a host may pass (rAF's
+  # timestamp) are collected by the rest parameter and not forwarded.
+  let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
+                          strRet, destroy, strArgs, cstrArgs, storeProcs)
+  var w = ""
+  for k in 0 ..< g.callbacks.len:
+    if g.callbacks[k] == callbackWrapperText("__cb" & $k, body):
+      w = "__cb" & $k
+      break
+  if w.len == 0:
+    w = "__cb" & $g.callbacks.len
+    g.callbacks.add callbackWrapperText(w, body)
+  g.outp.openTree Call
   g.outp.ident w
+  genExpr(g, t)
+  g.outp.closeTag
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
   ## Emit each argument from `t`, moved to the width `decl`'s parameter declares

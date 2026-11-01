@@ -43,6 +43,14 @@
   (pragmas
    (importjs "(# === null ? 1 : 0)"))
   (stmts .))
+ (proc :same.0.
+  (params
+   (param :a.0 . Cb.0.tcnil)
+   (param :b.0 . Cb.0.tcnil))
+  (i 32)
+  (pragmas
+   (importjs "(# === # ? 1 : 0)"))
+  (stmts .))
  (proc :probe.0.
   (params
    (param :s.0 . (aptr (c 8))))
@@ -96,4 +104,10 @@
          (i 32)
          (call csIsNull.0. (call nullCs.0.)) 4)))
       16)))
+   (asgn acc.0
+    (add
+     (i 32) acc.0
+     (mul
+      (i 32)
+      (call same.0. live.0 probe.0.) 128)))
    (ret acc.0))))
