@@ -209,6 +209,10 @@ console.log(U8[$6]);
 #   memory) into a global: the store must land in the NEW buffer, not the one JS
 #   had read `DV` from before the call. A lost store leaves the global nil (exit
 #   3, not 5).
+# * tcbthrow: a callback with a 4 KiB frame throws into a JS host that catches
+#   it 1000 times (4 MiB of frames on a 64 KiB stack). The host boundary
+#   restores SP, so the loop survives and SP is back where it started (1, plus
+#   4 from main). Without the restore it dies of "stack overflow".
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -231,7 +235,9 @@ const fixtureRuns = [
   FixtureRun(file: "toomstr", exitCode: 6,
              label: "a failed string allocation: no write through nil, no end"),
   FixtureRun(file: "tgrowstore", exitCode: 5,
-             label: "a store whose value grows memory lands in the live buffer")]
+             label: "a store whose value grows memory lands in the live buffer"),
+  FixtureRun(file: "tcbthrow", exitCode: 5,
+             label: "a callback that throws into a catching host leaves SP restored")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.

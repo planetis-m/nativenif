@@ -122,6 +122,12 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   shadow-stack frame for the hidden result slot (so a timer firing after the
   caller's frame is gone, or a reentrant call, is safe), converts the result
   to a JS string and then runs the string's `=destroy`.
+  **Throws.** Every callback and every export is entered through `hostCall`,
+  which restores the shadow-stack pointer when it exits, so a JS exception
+  crossing Nim frames (a panic, a trap, `nim_exit` in a browser) skips their
+  `leave` without leaving the stack pointer low for a host that catches it
+  and calls again. Nim frames carry no handler of their own: the exception
+  does not run `=destroy` for what they own, so those values leak.
   **Strings.** A `string` an `importjs` proc returns (or a callback receives)
   is an ordinary owned Nim string, freed by its normal `=destroy`. The JS side
   knows nothing of the layout: it encodes the text, empties the slot (what
