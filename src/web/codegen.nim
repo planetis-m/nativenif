@@ -3255,9 +3255,9 @@ proc genStmt(g: var WebGen; c: var Cursor)   # mutually recursive with genCase
 
 proc widthLit(g: var WebGen; w: WidthCode; v: int64) =
   ## A constant in the scrutinee's world: BigInt for the 64-bit widths, Number
-  ## for the rest, so a comparison never straddles the two.
-  if w in {wI64, wU64}: g.outp.bigIntLit $v
-  else: g.outp.numLit v
+  ## for the rest, so a comparison never straddles the two. `v` is `branchImm`'s
+  ## bit pattern, which `intLitAs` reads back unsigned for a u64 scrutinee.
+  intLitAs(g, v, false, w)
 
 proc caseValue(g: var WebGen; r: Cursor): int64 =
   ## The value a case branch selects on. nimony folds a named `const` (and an
@@ -3351,7 +3351,7 @@ proc genCase(g: var WebGen; c: Cursor) =
         o.into:
           let rg = o
           skip o
-          if o.kind != TagLit or o.stmtKind != StmtsS:
+          if o.kind != TagLit or o.stmtKind notin {StmtsS, ScopeS}:
             err g, "case branch without a statement list"
           branches.add (rg, o)
           while o.hasMore: skip o

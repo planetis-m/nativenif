@@ -242,4 +242,20 @@ if nodeExe.len > 0:
   check "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed",
     sr2.exitCode == 230, "exit " & $sr2.exitCode & "\n" & sr2.output
 
+# Case labels. `fixtures/tcase.c.nif` switches u64 scrutinees: a range at the
+# top of the u64 domain (+1), a label above 2^53 that its neighbour must not
+# match (+2, +4). The branches are `(scope ...)`, as hexer emits the empty
+# arms of a variant object's `=destroy`.
+let csPath = path.parentDir / "tcase.c.nif"
+var csBuf = parseFromFile(csPath, sharedTags = tags)
+var csMod = default(WebModule)
+var csTree = generate(csBuf, csPath, tags, wtJs, csMod)
+let csJs = getTempDir() / "jorogumo_case_" & $getCurrentProcessId() & ".js"
+writeFile(csJs, renderJs(csTree, csMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let csr = execCmdEx(nodeExe & " " & quoteShell(csJs))
+  removeFile(csJs)
+  check "case labels: u64 labels past 2^53, scope bodies",
+    csr.exitCode == 7, "exit " & $csr.exitCode & "\n" & csr.output
+
 echo "tcodegen: all checks passed"
