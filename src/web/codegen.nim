@@ -2525,7 +2525,7 @@ proc wrapResult(g: var WebGen; w: var CallbackWrap; ret: Cursor) =
   case jsBridgeKind(g, ret)
   of jbNone:
     if hasRet and isAggType(g, ret):
-      err g, "a JS callback cannot return an aggregate struct"
+      err g, "a JS callback cannot return an aggregate struct (" & w.owner & ")"
   of jbHandle:
     w.retBridge = "eunwrap"
     w.bridged = true
@@ -2555,9 +2555,10 @@ proc wrapStringProcs(g: var WebGen; w: var CallbackWrap) =
 
 proc wrapBody(g: var WebGen; w: CallbackWrap): string =
   ## The body of the arrow function that wraps the Nim proc in `slot`. The
-  ## wrapper owns a shadow stack frame of its own, because the JS host may call
-  ## after the Nim caller's frame is gone (a timer) or while another is live
-  ## (reentrancy). The frame holds one 8-byte slot per `string` argument and,
+  ## wrapper owns a shadow stack frame of its own when it owns anything (a
+  ## `string` or `cstring` argument or a `string` result), because the JS host
+  ## may call after the Nim caller's frame is gone (a timer) or while another is
+  ## live (reentrancy); otherwise it just calls. The frame holds one 8-byte slot per `string` argument and,
   ## after them, the hidden result slot: a `string` result comes back through
   ## the hidden first parameter, so the call already carries it. A `string`
   ## parameter is borrowed by the Nim proc, so the wrapper owns what
@@ -2612,8 +2613,9 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   for i, pty in ptypes: wrapParam(g, w, pty, i)
   wrapResult(g, w, ret)
   if not w.bridged:
-    # Already JS-callable: hand over the function the table holds. Works for a
-    # symbol or a stored fn-ptr — the index is whatever the operand evaluates to.
+    # Already JS-callable: `cbWrap` hands over the function the table holds.
+    # Works for a symbol or a stored fn-ptr: the index is whatever the operand
+    # evaluates to.
     g.outp.openTree Call
     g.outp.ident "cbWrap"
     genExpr(g, t)
@@ -2625,11 +2627,10 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # path: the operand evaluates to a table slot, and `cbWrap` builds the
   # wrapper for a slot ONCE, so handing the same Nim proc to JS twice
   # (addEventListener, then removeEventListener) gives JS the same function,
-  # from either site. `FTAB[h]` is the Nim proc
-  # itself, so only the arguments need converting. The extra arguments a host may
-  # pass (rAF's timestamp) are collected by the rest parameter and not
-  # forwarded. A capturing closure stays out of reach: jorogumo carries no
-  # environment.
+  # from either site. `FTAB[h]` is the Nim proc itself, so only the arguments
+  # need converting. The extra arguments a host may pass (rAF's timestamp) are
+  # collected by the rest parameter and not forwarded. A capturing closure stays
+  # out of reach: jorogumo carries no environment.
   wrapStringProcs(g, w)
   let body = wrapBody(g, w)
   let name = "__cb" & $g.callbacks.len

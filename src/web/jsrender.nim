@@ -325,9 +325,9 @@ function cstrToJs(p) {
   # (lib/std/system/stringimpl.nim): `begin(dst, n)` sets the length, picks
   # inline or long storage and returns the address of the first byte (0 when the
   # allocation failed, which leaves `dst` the sticky OOM string, `isOom`),
-  # `end(dst)` syncs the inline cache. The slot starts as an empty string, which is what
-  # `=wasMoved` writes (`bytes = 0`). `begin` may grow linear memory, so the
-  # bytes go through `U8` read AFTER it. The caller owns the result.
+  # `end(dst)` syncs the inline cache. The slot starts as an empty string, which
+  # is what `=wasMoved` writes (`bytes = 0`). `begin` may grow linear memory, so
+  # the bytes go through `U8` read AFTER it. The caller owns the result.
   result.add """
 function jsToNimStr(dst, begin, end, v) {
   // A Nim string has no nil: null and undefined are the empty string.
@@ -563,7 +563,7 @@ type
                      ## under every enclosing load.
 
 proc exprText(c: Cursor; s: var RenderState): string
-proc stmtText*(c: Cursor; s: var RenderState): string
+proc stmtText(c: Cursor; s: var RenderState): string
   ## Forward decls — `arrow` bodies are statements, and statements embed
   ## expressions, so the two walks are mutually recursive.
 
@@ -1023,7 +1023,7 @@ proc zeroOf(w: WidthCode): string =
   ## A fresh local's value: zero in its own numeric world.
   if w.isBig: "0n" else: "0"
 
-proc stmtText*(c: Cursor; s: var RenderState): string =
+proc stmtText(c: Cursor; s: var RenderState): string =
   let p = pad(s.indent)
   case webTagOf(c)
   of NoTag:
