@@ -1,0 +1,42 @@
+(.nif27)
+(stmts@,1,tclosure_cbarg.nim
+ (type :Env.0.tclosure_cbarg .
+  (object .
+   (fld :r.0 .
+    (i 32))))
+ (type :Fn.0.tclosure_cbarg .
+  (proctype .
+   (params
+    (param :`ep.0 .
+     (ptr Env.0.tclosure_cbarg))) . .))
+ (type :Clo.0.tclosure_cbarg .
+  (object .
+   (fld :fld.0 . Fn.0.tclosure_cbarg)
+   (fld :fld.1 .
+    (ptr Env.0.tclosure_cbarg))))
+ (type :Cb.0.tclosure_cbarg .
+  (proctype .
+   (params
+    (param :f.0 . Clo.0.tclosure_cbarg)) . .))
+ (proc :fire.0.
+  (params
+   (param :cb.0 . Cb.0.tclosure_cbarg))
+  .
+  (pragmas
+   (importjs "#(0)"))
+  (stmts .))
+ (proc :handler.0.
+  (params
+   (param :f.0 . Clo.0.tclosure_cbarg))
+  .
+  .
+  (stmts .))
+
+ (proc :main.0.
+  (params)
+  (i 32)
+  (pragmas
+   (exportc "main"))
+  (stmts
+   (call fire.0. handler.0.)
+   (ret 0))))

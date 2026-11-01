@@ -118,6 +118,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   the exports land on `globalThis.NIF` instead of `module.exports`). A
   bodyless `importjs` proc splices its template at the call site, and Nim
   strings, cstrings, JS object handles and callbacks are bridged across it.
+  A `{.closure.}` proc cannot cross: as a parameter or result of an
+  `importjs` proc, or nested in a callback's own signature, it is refused by
+  name (jorogumo carries no environment). A `nimcall` proc, named or held in
+  a variable, is a callback.
   The wasm target refuses `importjs` by name.
 
 ## Intrinsics: `(instr …)` rows
