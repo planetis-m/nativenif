@@ -140,9 +140,21 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   result takes none), so `g(s(), s())` holds two distinct values. A callback
   wrapper that receives `string` arguments owns them (the Nim parameter is
   borrowed): it builds them in slots of its own frame and destroys them after
-  the call, together with the result slot. A `cstring` result has no owner to
-  free it, so it is never freed, and it still comes from the `osalloc` bump
-  heap, whose ceiling (`SP_MIN`) limits the total cstring traffic of a program.
+  the call, together with the result slot. A `cstring` argument of a callback
+  is borrowed the same way: its bytes sit in the wrapper's frame and leave with
+  it. A `cstring` result of a splice has no owner to free it, so it is never
+  freed, and it still comes from the `osalloc` bump heap, whose ceiling
+  (`SP_MIN`) limits the total such traffic of a program.
+  **Nil.** JS `null` and `undefined` are the nil handle and the nil `cstring`
+  (and the reverse: a nil `cstring`, handle or proc reaches JS as `null`). A
+  Nim `string` has no nil, so they become the empty string. A callback is one
+  JS function per Nim proc: a named proc and a stored value of it, handed over
+  twice or from two splices, are the same function, so
+  `removeEventListener` matches. Not bridged, and refused by name: a plain
+  aggregate as a splice RESULT (an aggregate argument is the address of a
+  copy), a `var`/`lent` string or `cstring` anywhere on the boundary, a
+  `sink` parameter and a `.raises` proc (nimsem). A scalar a JS caller omits
+  reaches a callback as `undefined`.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.
@@ -157,8 +169,16 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   their own (`memoryGrow`), not from the `osalloc` heap. Limits: the table pins
   every distinct JS value for the life of the program (it is never released),
   and the cell is empty, so field access or method dispatch through the handle
-  in Nim is not supported (go through `importjs`). `eunwrap` of a number that
-  is no handle (a Nim address passed as userdata) yields `undefined`.
+  in Nim is not supported (go through `importjs`). That includes inheritance:
+  an upcast (`Node(element)`) is the same handle and works, but the cell has no
+  type information, so `n of Element` is always false, a checked downcast
+  `Element(n)` panics with "invalid object conversion", and a `method` call
+  through a handle traps with "nil function pointer". Use `cast[Element](n)`,
+  which keeps the handle. `eunwrap` of a number that
+  is no handle (a Nim address passed as userdata) yields `undefined`, and so
+  does a `ref` the program allocated itself (`new`) when it is passed to an
+  `importjs` proc: only a value that came from JS is a handle, and nothing at
+  compile time tells the two apart.
   A `{.closure.}` proc cannot cross (jorogumo carries no environment): the
   front end (nimsem) refuses one as a parameter or result of an `importjs`
   proc, or nested in a callback's own signature, with the parameter's source
