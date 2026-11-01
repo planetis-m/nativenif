@@ -188,6 +188,16 @@ function memoryGrow(pages) {
   return old;
 }
 """
+  # Loads and stores whose operands may GROW memory. JS reads `DV` (or `U8`, ...)
+  # BEFORE it evaluates the arguments, so `DV.setUint32(a, f(), true)` with an
+  # `f` that grows memory stores into the old, abandoned buffer and the write
+  # vanishes. These helpers take the evaluated operands first and read the live
+  # view inside.
+  for w in WidthCode:
+    let ld = if w in {wI8, wU8}: viewNames[w] & "[a]" else: "DV." & dvGet[w] & "(a, true)"
+    let st = if w in {wI8, wU8}: viewNames[w] & "[a] = v" else: "DV." & dvSet[w] & "(a, v, true)"
+    result.add "function __ld" & viewNames[w] & "(a) { return " & ld & "; }\n"
+    result.add "function __st" & viewNames[w] & "(a, v) { " & st & "; }\n"
   # The static image: the wasm data section's twin. Base64 because the image
   # is arbitrary bytes and a JS string literal is not.
   result.add """
@@ -633,6 +643,18 @@ proc pairWidths(c: Cursor): (WidthCode, WidthCode) =
     raiseAssert "jsrender: `" & $webTagOf(c) & "` has no destination width"
   result = (src, WidthCode(it.intVal))
 
+proc mayGrowMemory(c: Cursor): bool =
+  ## Whether evaluating `c` can run code that grows linear memory (and so
+  ## rebinds the views): a call of any kind, a splice, a handle wrap or the
+  ## grow node itself.
+  result = false
+  if c.kind != TagLit: return
+  if webTagOf(c) in {Call, ICall, Raw, EWrap, MemGrow}: return true
+  var it = c.firstChild
+  while it.hasMore and not result:
+    result = mayGrowMemory(it)
+    skip it
+
 proc operandTexts(c: Cursor; indent: int; w: out WidthCode): seq[string] =
   result = @[]
   var it = c.firstChild
@@ -765,6 +787,7 @@ proc exprText(c: Cursor; indent: int): string =
     skip it
     let at = exprText(it, indent)
     let s = scaleOf(w)
+    if mayGrowMemory(it): return "__ld" & viewNames[w] & "(" & at & ")"
     # Width 2+ goes through the DataView: a typed array at a fractional index
     # reads `undefined` and the store below vanishes — silent wrong code, the
     # one outcome worse than wasm's trap. The DataView needs no alignment and
@@ -775,10 +798,13 @@ proc exprText(c: Cursor; indent: int): string =
     var it = c.firstChild
     let w = opWidth(c)
     skip it
+    let atNode = it
     let at = exprText(it, indent)
     skip it
     let s = scaleOf(w)
     let val = exprText(it, indent)
+    if mayGrowMemory(atNode) or mayGrowMemory(it):
+      return "__st" & viewNames[w] & "(" & at & ", " & val & ")"
     if s == 1: result = "(" & viewNames[w] & "[" & at & "] = " & val & ")"
     else: result = "(DV." & dvSet[w] & "(" & at & ", " & val & ", true))"
   # ── extern bridge

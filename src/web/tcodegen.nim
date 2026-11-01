@@ -284,6 +284,22 @@ if nodeExe.len > 0:
   check "null at the bridge: nil cstring, nil proc, callback cstring in the frame",
     nlr.exitCode == 247, "exit " & $nlr.exitCode & "\n" & nlr.output
 
+# A store whose value grows memory. `fixtures/tgrowstore.c.nif` stores the
+# first handle ever made (its cell page grows linear memory) into a global:
+# the store must land in the NEW buffer, not the one JS had read `DV` from
+# before the call. A lost store leaves the global nil (exit 3, not 5).
+let gsPath = path.parentDir / "tgrowstore.c.nif"
+var gsBuf = parseFromFile(gsPath, sharedTags = tags)
+var gsMod = default(WebModule)
+var gsTree = generate(gsBuf, gsPath, tags, wtJs, gsMod)
+let gsJs = getTempDir() / "jorogumo_growstore_" & $getCurrentProcessId() & ".js"
+writeFile(gsJs, renderJs(gsTree, gsMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let gsr = execCmdEx(nodeExe & " " & quoteShell(gsJs))
+  removeFile(gsJs)
+  check "a store whose value grows memory lands in the live buffer",
+    gsr.exitCode == 5, "exit " & $gsr.exitCode & "\n" & gsr.output
+
 # A plain aggregate has no JS spelling as a splice RESULT (an argument is its
 # address): refused, naming the proc, rather than read back as garbage.
 proc refusal(fixture: string): (string, int) =
