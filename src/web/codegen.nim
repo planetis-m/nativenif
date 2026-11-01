@@ -1466,6 +1466,30 @@ proc isHostDeclaration(decl: Cursor): bool
 proc hasPragma(decl: Cursor; want: LengPragma): bool
   ## Forward declaration; defined with the pragma helpers. `genCallFrom` needs
   ## it to route a bodyless `importjs` proc to the splice.
+proc spliceDecl(g: var WebGen; sym: SymId; decl: var Cursor; found: var bool): bool =
+  ## Is the proc `sym` an `importjs` splice, a bodyless proc whose calls
+  ## become its JS template? `decl` and `found` are `procDeclOf`'s answer.
+  decl = procDeclOf(g, sym, found)
+  result = found and not hasBody(decl) and hasPragma(decl, ImportjsP)
+
+proc spliceParamBridges(g: var WebGen; decl: Cursor): seq[JsBridgeKind] =
+  ## How each parameter of the splice `decl` crosses to JS, in order.
+  result = @[]
+  var p = decl
+  p.into:
+    inc p                                    # name
+    p.into:                                  # params
+      while p.hasMore:
+        var q = p
+        q.into:
+          inc q                              # name
+          skip q                             # pragmas
+          result.add jsBridgeKind(g, q)
+          while q.hasMore: skip q
+        skip p
+    skip p                                   # result type
+    while p.hasMore: skip p                  # pragmas, body
+
 proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
   if c.kind != TagLit: return
   if c.stmtKind == VarS:
@@ -1528,36 +1552,22 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
   # (or `ewrap`) wraps in place, so a handle or cstring result has no sret
   # destination. A `string` result DOES: `jsToNimStr` fills a frame temporary
   # and the expression's value is its address (the splice branch of
-  # `genCallFrom` takes it). A splice takes bridge-typed arguments (string, cstring, handle, callback) as JS values,
-  # NOT as fresh Nim copies — `genCallArgs` emits the conversion instead of
-  # `genAggArg`. The plan must skip those reservations or the two walks
-  # desynchronize.
+  # `genCallFrom` takes it). A splice takes bridge-typed arguments (string,
+  # cstring, handle, callback) as JS values, NOT as fresh Nim copies:
+  # `genCallArgs` emits the conversion instead of `genAggArg`. The plan must
+  # skip those reservations or the two walks desynchronize.
   var spliceBridges: seq[JsBridgeKind] = default(seq[JsBridgeKind])
   var isSplice = false
   var spliceStrRet = false
   if c.exprKind == CallC:
-    var tg = sub(c)
-    if tg.kind == Symbol:
-      var found = false
-      let decl = procDeclOf(g, symId(tg), found)
-      if found and not hasBody(decl) and hasPragma(decl, ImportjsP):
-        isSplice = true
-        let srt = callResultType(g, c)
-        spliceStrRet = not srt.cursorIsNil and jsBridgeKind(g, srt) == jbString
-        var p = decl
-        p.into:
-          inc p                                # name
-          p.into:                              # params
-            while p.hasMore:
-              var q = p
-              q.into:
-                inc q                          # name
-                skip q                         # pragmas
-                spliceBridges.add jsBridgeKind(g, q)
-                while q.hasMore: skip q
-              skip p
-          skip p                                 # result type
-          while p.hasMore: skip p                # pragmas, body
+    let tg = sub(c)
+    var decl = default(Cursor)
+    var found = false
+    if tg.kind == Symbol and spliceDecl(g, symId(tg), decl, found):
+      isSplice = true
+      let srt = callResultType(g, c)
+      spliceStrRet = not srt.cursorIsNil and jsBridgeKind(g, srt) == jbString
+      spliceBridges = spliceParamBridges(g, decl)
   let isCtorNode = c.exprKind in {OconstrC, AconstrC}
   if isCtorNode and needsTemp:
     let sz = constrSize(g, c)
@@ -2827,9 +2837,9 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
   elif indirect:
     genIndirectCall(g, target, t)
   else:
+    var decl = default(Cursor)
     var found = false
-    let decl = procDeclOf(g, nmSym, found)
-    if found and not hasBody(decl) and hasPragma(decl, ImportjsP):
+    if spliceDecl(g, nmSym, decl, found):
       if g.target != wtJs:
         err g, "`importjs` proc `" & g.spell(nm) & "` has no wasm lowering"
       # A bodyless `importjs` proc splices its JS template at the call site:
