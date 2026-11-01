@@ -132,9 +132,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   syncs the inline cache so `==` and `hash` agree with a literal of the same
   text. Inline storage, the `LongString` block and the allocator are all
   decided by that module. Both entry points are `exportc` (dead-code roots)
-  and exist only on the wasm32/standalone target; codegen finds them by
-  exportc name like `nimStrDestroy` and refuses a program whose `string` has
-  none. The 8-byte value itself lives in a frame
+  and exist only on the wasm32/standalone target; codegen names them
+  directly (`nimStrBeginStore.0.<module>`, they are not overloaded), finds
+  `nimStrDestroy` by exportc name, and refuses a program whose `string` has no
+  store procs. The 8-byte value itself lives in a frame
   temporary: a splice with a `string` result reserves one in the frame plan and
   takes it in codegen, like any aggregate-returning call (a handle or cstring
   result takes none), so `g(s(), s())` holds two distinct values. A callback
