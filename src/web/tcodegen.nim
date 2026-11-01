@@ -161,161 +161,110 @@ console.log(U8[$6]);
   expect "engine reads the image back", strip(r.output),
     "14\nhello jorogumo\ntrue\n4294967296\n7,8,9\n1,0\n0"
 
-  # The frame plan and the lowering walk the same tree. An `importjs` string
-  # splice takes a frame temporary for its result (a handle or cstring splice
-  # takes none); a mismatch shifted every later temporary (a 12-byte
-  # constructor met an 8-byte slot).
-  # `fixtures/tsplice.c.nif` splices a string, builds a pair of strings and
-  # passes a constructor to a call; 3 + 3 + (5 + 7 + 11) is the exit code.
-  let splicePath = path.parentDir / "tsplice.c.nif"
-  var sbuf = parseFromFile(splicePath, sharedTags = tags)
-  var sm = default(WebModule)
-  var stree = generate(sbuf, splicePath, tags, wtJs, sm)
-  let spliceJs = getTempDir() / "jorogumo_splice_" & $getCurrentProcessId() & ".js"
-  writeFile(spliceJs, renderJs(stree, sm, 64 * 1024 * 1024, 64 * 1024))
-  defer: removeFile(spliceJs)
-  let sr = execCmdEx(nodeExe & " " & quoteShell(spliceJs))
-  check "splice then constructors: the plan matches the lowering",
-    sr.exitCode == 29, "exit " & $sr.exitCode & "\n" & sr.output
+# Each fixture is a program that exits with the sum of the checks it passes, so
+# the engine is the judge: generate, render, run under node, compare the exit
+# code. What each fixture's code adds up:
+#
+# * tsplice: the frame plan and the lowering walk the same tree. An `importjs`
+#   string splice takes a frame temporary for its result (a handle or cstring
+#   splice takes none); a mismatch shifted every later temporary (a 12-byte
+#   constructor met an 8-byte slot). It splices a string, builds a pair of
+#   strings and passes a constructor to a call: 3 + 3 + (5 + 7 + 11).
+# * tstrbridge: a string an `importjs` proc returns is an ordinary owned Nim
+#   string, built in a frame temporary of the caller. It splices strings of 0, 3,
+#   6 (the inline payload limit), 7 and 10 chars: only a string past the payload
+#   allocates. The fixture stubs the runtime's `nimStrBeginStore` and
+#   `nimStrEndStore` (the bridge writes no layout of its own, it only calls them
+#   and copies the bytes), and each string is checked by what it reads as; two
+#   live results of one expression do not share a slot; every begin has its end.
+# * tcallback: fires a named proc and a stored fn-ptr with `null`, `undefined`,
+#   an object, a function and a number: the first two must arrive as nil (+1
+#   each), the object and the function as handles (+2 each), the number
+#   untouched (+16).
+# * thandle: takes `globalThis` twice (equal handles, +1), two fresh objects
+#   (different handles, +2), a handle through an `importjs` identity splice (+4),
+#   and checks that a crossing STORES the huge count into the cell at offset 0
+#   even after the program clobbered it (+8) and that the handle is a 16-aligned
+#   address (+16).
+# * tcbstring: a callback that returns a `string` (an aggregate, through the
+#   hidden first parameter), fired with a parameter and with none, each as a
+#   named proc and as a stored fn-ptr. The host must see "alphabet" and "zero"
+#   (1 + 1 + 2 + 2). Each of the four returned strings is destroyed once, after
+#   its conversion, and so is each of the two "alphabet" arguments the wrapper
+#   built for the borrowed parameter (6 * 16); each of those two were built long
+#   by the store entry points (2 * 64), "zero" fits inline.
+# * tcase: switches u64 scrutinees: a range at the top of the u64 domain (+1), a
+#   label above 2^53 that its neighbour must not match (+2, +4). The branches are
+#   `(scope ...)`, as hexer emits the empty arms of a variant object's
+#   `=destroy`.
+# * tcnil: fires a callback that takes a `cstring` with null (the nil cstring,
+#   +1) and with "abc" three times (borrowed bytes in the wrapper's frame,
+#   NUL-terminated, +2 each); a nil stored proc, a nil cstring and a splice
+#   returning null reach JS as null (+16, +32, +64); one Nim proc handed over as
+#   a stored value and as a named proc is the same JS function (+128).
+# * tgrowstore: stores the first handle ever made (its cell page grows linear
+#   memory) into a global: the store must land in the NEW buffer, not the one JS
+#   had read `DV` from before the call. A lost store leaves the global nil (exit
+#   3, not 5).
+type FixtureRun = object
+  file, label: string
+  exitCode: int
 
-# A string an `importjs` proc returns is an ordinary owned Nim string, built in
-# a frame temporary of the caller. `fixtures/tstrbridge.c.nif` splices strings
-# of 0, 3, 6 (the inline payload limit), 7 and 10 chars: only a string past the
-# payload allocates. The fixture stubs the runtime's `nimStrBeginStore` and
-# `nimStrEndStore` (the bridge writes no layout of its own, it only calls them
-# and copies the bytes), and each string is checked by what it reads as; two
-# live results of one expression do not share a slot; every begin has its end.
-let sgPath = path.parentDir / "tstrbridge.c.nif"
-var sgBuf = parseFromFile(sgPath, sharedTags = tags)
-var sgMod = default(WebModule)
-var sgTree = generate(sgBuf, sgPath, tags, wtJs, sgMod)
-let sgJs = getTempDir() / "jorogumo_strbridge_" & $getCurrentProcessId() & ".js"
-writeFile(sgJs, renderJs(sgTree, sgMod, 64 * 1024 * 1024, 64 * 1024))
+const fixtureRuns = [
+  FixtureRun(file: "tsplice", exitCode: 29,
+             label: "splice then constructors: the plan matches the lowering"),
+  FixtureRun(file: "tstrbridge", exitCode: 63,
+             label: "bridged strings: inline up to the payload, Nim-built string"),
+  FixtureRun(file: "tcallback", exitCode: 22,
+             label: "handle callback arguments: null, undefined, object, function, number"),
+  FixtureRun(file: "thandle", exitCode: 31,
+             label: "handle identity: one JS value, one handle; the cell count is restored"),
+  FixtureRun(file: "tcbstring", exitCode: 230,
+             label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed"),
+  FixtureRun(file: "tcase", exitCode: 7,
+             label: "case labels: u64 labels past 2^53, scope bodies"),
+  FixtureRun(file: "tcnil", exitCode: 247,
+             label: "null at the bridge: nil cstring, nil proc, callback cstring in the frame"),
+  FixtureRun(file: "tgrowstore", exitCode: 5,
+             label: "a store whose value grows memory lands in the live buffer")]
+
+proc runFixture(dir, name, nodeExe: string): (string, int) =
+  ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.
+  let fixture = dir / name & ".c.nif"
+  var fbuf = parseFromFile(fixture, sharedTags = tags)
+  var fmod = default(WebModule)
+  var ftree = generate(fbuf, fixture, tags, wtJs, fmod)
+  let js = getTempDir() / "jorogumo_" & name & "_" & $getCurrentProcessId() & ".js"
+  writeFile(js, renderJs(ftree, fmod, 64 * 1024 * 1024, 64 * 1024))
+  defer: removeFile(js)
+  execCmdEx(nodeExe & " " & quoteShell(js))
+
 if nodeExe.len > 0:
-  let sgr = execCmdEx(nodeExe & " " & quoteShell(sgJs))
-  removeFile(sgJs)
-  check "bridged strings: inline up to the payload, Nim-built string",
-    sgr.exitCode == 63, "exit " & $sgr.exitCode & "\n" & sgr.output
+  for r in fixtureRuns:
+    let (output, code) = runFixture(path.parentDir, r.file, nodeExe)
+    check r.label, code == r.exitCode, "exit " & $code & "\n" & output
 
-# `importjs` callbacks run end to end. `fixtures/tcallback.c.nif` fires a named
-# proc and a stored fn-ptr with `null`, `undefined`, an object, a function and a
-# number: the first two must arrive as nil (+1 each), the object and the
-# function as handles (+2 each), the number untouched (+16).
-let cbPath = path.parentDir / "tcallback.c.nif"
-var cbBuf = parseFromFile(cbPath, sharedTags = tags)
-var cbMod = default(WebModule)
-var cbTree = generate(cbBuf, cbPath, tags, wtJs, cbMod)
-let cbJs = getTempDir() / "jorogumo_callback_" & $getCurrentProcessId() & ".js"
-writeFile(cbJs, renderJs(cbTree, cbMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let cr = execCmdEx(nodeExe & " " & quoteShell(cbJs))
-  removeFile(cbJs)
-  check "handle callback arguments: null, undefined, object, function, number",
-    cr.exitCode == 22, "exit " & $cr.exitCode & "\n" & cr.output
+# `refuse` quits, so a refusal is read off a process (`--generate`). A plain
+# aggregate has no JS spelling as a splice RESULT (an argument is its address):
+# refused, naming the proc, rather than read back as garbage. The same for a
+# `var`/`lent` string, which is a pointer to the Nim value.
+type Refusal = object
+  fixture, label: string
+  needles: seq[string]     ## what the message must contain
 
-# Handle identity (doc/web.md): `fixtures/thandle.c.nif` takes `globalThis`
-# twice (equal handles, +1), two fresh objects (different handles, +2), a
-# handle through an `importjs` identity splice (+4), and checks that a crossing
-# STORES the huge count into the cell at offset 0 even after the program
-# clobbered it (+8) and that the handle is a 16-aligned address (+16).
-let hdPath = path.parentDir / "thandle.c.nif"
-var hdBuf = parseFromFile(hdPath, sharedTags = tags)
-var hdMod = default(WebModule)
-var hdTree = generate(hdBuf, hdPath, tags, wtJs, hdMod)
-let hdJs = getTempDir() / "jorogumo_handle_" & $getCurrentProcessId() & ".js"
-writeFile(hdJs, renderJs(hdTree, hdMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let hr = execCmdEx(nodeExe & " " & quoteShell(hdJs))
-  removeFile(hdJs)
-  check "handle identity: one JS value, one handle; the cell count is restored",
-    hr.exitCode == 31, "exit " & $hr.exitCode & "\n" & hr.output
-
-# A callback that returns a `string` (an aggregate, through the hidden first
-# parameter): `fixtures/tcbstring.c.nif` fires one with a parameter and one
-# with none, each as a named proc and as a stored fn-ptr. The host must see
-# "alphabet" and "zero" (1 + 1 + 2 + 2). Each of the four returned strings is
-# destroyed once, after its conversion, and so is each of the two "alphabet"
-# arguments the wrapper built for the borrowed parameter (6 * 16); each of
-# those two were built long by the store entry points (2 * 64), "zero" fits
-# inline.
-let sbPath = path.parentDir / "tcbstring.c.nif"
-var sbBuf = parseFromFile(sbPath, sharedTags = tags)
-var sbMod = default(WebModule)
-var sbTree = generate(sbBuf, sbPath, tags, wtJs, sbMod)
-let sbJs = getTempDir() / "jorogumo_cbstring_" & $getCurrentProcessId() & ".js"
-writeFile(sbJs, renderJs(sbTree, sbMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let sr2 = execCmdEx(nodeExe & " " & quoteShell(sbJs))
-  removeFile(sbJs)
-  check "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed",
-    sr2.exitCode == 230, "exit " & $sr2.exitCode & "\n" & sr2.output
-
-# Case labels. `fixtures/tcase.c.nif` switches u64 scrutinees: a range at the
-# top of the u64 domain (+1), a label above 2^53 that its neighbour must not
-# match (+2, +4). The branches are `(scope ...)`, as hexer emits the empty
-# arms of a variant object's `=destroy`.
-let csPath = path.parentDir / "tcase.c.nif"
-var csBuf = parseFromFile(csPath, sharedTags = tags)
-var csMod = default(WebModule)
-var csTree = generate(csBuf, csPath, tags, wtJs, csMod)
-let csJs = getTempDir() / "jorogumo_case_" & $getCurrentProcessId() & ".js"
-writeFile(csJs, renderJs(csTree, csMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let csr = execCmdEx(nodeExe & " " & quoteShell(csJs))
-  removeFile(csJs)
-  check "case labels: u64 labels past 2^53, scope bodies",
-    csr.exitCode == 7, "exit " & $csr.exitCode & "\n" & csr.output
-
-# JS null and undefined at the bridge. `fixtures/tcnil.c.nif` fires a callback
-# that takes a `cstring` with null (the nil cstring, +1) and with "abc" three
-# times (borrowed bytes in the wrapper's frame, NUL-terminated, +2 each); a nil
-# stored proc, a nil cstring and a splice returning null reach JS as null
-# (+16, +32, +64); one Nim proc handed over as a stored value and as a
-# named proc is the same JS function (+128).
-let nlPath = path.parentDir / "tcnil.c.nif"
-var nlBuf = parseFromFile(nlPath, sharedTags = tags)
-var nlMod = default(WebModule)
-var nlTree = generate(nlBuf, nlPath, tags, wtJs, nlMod)
-let nlJs = getTempDir() / "jorogumo_cnil_" & $getCurrentProcessId() & ".js"
-writeFile(nlJs, renderJs(nlTree, nlMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let nlr = execCmdEx(nodeExe & " " & quoteShell(nlJs))
-  removeFile(nlJs)
-  check "null at the bridge: nil cstring, nil proc, callback cstring in the frame",
-    nlr.exitCode == 247, "exit " & $nlr.exitCode & "\n" & nlr.output
-
-# A store whose value grows memory. `fixtures/tgrowstore.c.nif` stores the
-# first handle ever made (its cell page grows linear memory) into a global:
-# the store must land in the NEW buffer, not the one JS had read `DV` from
-# before the call. A lost store leaves the global nil (exit 3, not 5).
-let gsPath = path.parentDir / "tgrowstore.c.nif"
-var gsBuf = parseFromFile(gsPath, sharedTags = tags)
-var gsMod = default(WebModule)
-var gsTree = generate(gsBuf, gsPath, tags, wtJs, gsMod)
-let gsJs = getTempDir() / "jorogumo_growstore_" & $getCurrentProcessId() & ".js"
-writeFile(gsJs, renderJs(gsTree, gsMod, 64 * 1024 * 1024, 64 * 1024))
-if nodeExe.len > 0:
-  let gsr = execCmdEx(nodeExe & " " & quoteShell(gsJs))
-  removeFile(gsJs)
-  check "a store whose value grows memory lands in the live buffer",
-    gsr.exitCode == 5, "exit " & $gsr.exitCode & "\n" & gsr.output
-
-# A plain aggregate has no JS spelling as a splice RESULT (an argument is its
-# address): refused, naming the proc, rather than read back as garbage.
 proc refusal(fixture: string): (string, int) =
   execCmdEx(quoteShell(getAppFilename()) & " --generate " &
             quoteShell(path.parentDir / fixture & ".c.nif"),
             options = {poStdErrToStdOut})
 
-let (aggOut, aggCode) = refusal("tsplice_aggret")
-check "aggregate splice result refused by name",
-  aggCode != 0 and aggOut.contains("importjs proc `mk.0") and
-    aggOut.contains("aggregate"), aggOut
-
-# The same for a `var`/`lent` string, which is a pointer to the Nim value.
-let (spOut, spCode) = refusal("tsplice_strptr")
-check "var string splice parameter refused by name",
-  spCode != 0 and spOut.contains("parameter `s.0` of `show.0") and
-    spOut.contains("pointer to a string"), spOut
+for r in [Refusal(fixture: "tsplice_aggret", label: "aggregate splice result refused by name",
+                  needles: @["importjs proc `mk.0", "aggregate"]),
+          Refusal(fixture: "tsplice_strptr", label: "var string splice parameter refused by name",
+                  needles: @["parameter `s.0` of `show.0", "pointer to a string"])]:
+  let (output, code) = refusal(r.fixture)
+  var named = true
+  for needle in r.needles:
+    named = named and output.contains(needle)
+  check r.label, code != 0 and named, output
 
 echo "tcodegen: all checks passed"
