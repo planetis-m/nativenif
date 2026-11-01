@@ -1133,6 +1133,8 @@ proc buildNestedAggrTemp(g: var CodeGen; valC, fty: Cursor): (SymId, int) =
   g.genStore(valC, namedStackLoc(tmpName, g.exprSlot(valC)))    # build (no staging held)
   (tmpName, aggrByteSize(g.prog, ntn))
 
+proc genAggrCopyStore*(g: var CodeGen; rhs: Cursor; dst: Location; size: int)
+
 proc genFieldStore*(g: var CodeGen; dst: Location; valC: Cursor) =
   ## Store value `valC` into the aggregate-field destination `dst` — the `Field` case
   ## of `genStore`, and the ONE per-field store behind `genConstr`. A scalar/float/
@@ -1140,7 +1142,16 @@ proc genFieldStore*(g: var CodeGen; dst: Location; valC: Cursor) =
   ## reinterprets a scalar register via `(cast (ptr …) reg)` for nifasm's strict
   ## typing); a nested aggregate field recurses (`genNestedAggrField` builds/copies the
   ## value into the field's address). No per-field special-casing at the call site.
-  if dst.typ.kind == AMem:                              # nested aggregate field
+  if dst.typ.kind == AMem and valC.kind == Symbol:     # nested aggregate, already built
+    # A named aggregate (a local, a param, a global) needs no building: copy it
+    # straight into the field. Through a temp it cost a stack slot as big as the
+    # field — 16 MB for a global `Outer(inner: big)` (nimony#2846) — and a second copy.
+    # Addressing a symbol evaluates nothing, so no register is held across a call.
+    let fty = g.fieldTypeByName(dst.aggrType, dst.field)
+    if fty.kind != Symbol:
+      raiseAssert "arkham x64n: nested aggregate field of non-nominal type"
+    g.genAggrCopyStore(valC, dst, aggrByteSize(g.prog, fty.symId))
+  elif dst.typ.kind == AMem:                            # nested aggregate field
     # Build the value into its own stack temp FIRST, holding nothing (see
     # `buildNestedAggrTemp`), and only then derive the field address for the copy.
     # A `baseGlob` (spilled-survivor) base is likewise re-derived AFTER the build, so
@@ -1516,6 +1527,12 @@ proc aggrDstEnd(g: var CodeGen; loc: Location; staged: var Reg): AggrEnd =
   staged = NoReg
   if loc.kind == NamedStack:
     return slotEnd(loc.name)
+  if loc.kind == Field:                                 # a nested aggregate field
+    let (d, gbTmp) = g.materializeGlobBase(loc, NoReg)
+    staged = g.pickStagingSealed("an aggregate-copy field address", AddrSlot)
+    g.emFieldAddr(d, staged)
+    g.giveBack gbTmp                                    # its address is in `staged` now
+    return regEnd(staged)
   if loc.kind == StackPtr:
     staged = g.pickStagingSealed("a spilled by-ref dst pointer", AddrSlot)
     g.ab.tree MovX64: (g.emReg staged; g.emStackMem(loc.ptrName))
@@ -2404,6 +2421,9 @@ proc emitDivByMagic(g: var CodeGen; divC: Cursor; dval: int64;
   if signed and dval == low(int64): return false
   let m = if signed: signedDivMagic(dval) else: unsignedDivMagic(ud)
   result = true
+  # The dividend (kept for the fixups and the remainder) and the 64-bit
+  # multiplier, which `mul` only takes from a register, are live at once.
+  g.bridgeStep("a magic division", bdTwoInRegs)
   let acc = g.md.intRetReg                              # rax: dividend, then quotient
   let hiR = g.md.divRemReg                              # rdx: the high half of the product
   var aD = regLoc(acc, ScalarSlot)
