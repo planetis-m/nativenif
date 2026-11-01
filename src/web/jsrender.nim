@@ -273,9 +273,10 @@ function leave() { SP = _SPF.pop(); }
 // would stay low and a host that catches and calls again would run out of
 // stack. The host boundary restores SP and the frame stack itself.
 function hostCall(f) {
-  return (...a) => {
+  return function () {
     const sp = SP, d = _SPF.length;
-    try { return f(...a); } finally { SP = sp; _SPF.length = d; }
+    try { return f.apply(undefined, arguments); }
+    catch (e) { SP = sp; _SPF.length = d; throw e; }
   };
 }
 """
