@@ -114,12 +114,14 @@ const FTAB = []; // function table: slot -> JS function; 0 is the null pointer
 // Cells are NOT osalloc memory (that heap is capped by SP_MIN and would die of
 // `out of memory` on cells alone): they come from pages of their own, obtained
 // with `memoryGrow` in chunks that double up to JCELL_MAXPAGES, which also keeps
-// the copy memoryGrow does amortized. The chunk's values live in a parallel
-// array, so handle -> value is a chunk lookup and an index. A Map holds at most
-// 2^24 entries, so value -> handle is sharded.
-const JCELL_RC = 1 << 30, JCELL_SHARD = 1 << 22, JCELL_MAXPAGES = 256;
+// the copy memoryGrow does amortized (each grow copies all of linear memory,
+// so fewer, larger chunks are what keeps interning linear). The chunk's values
+// live in a parallel array, so handle -> value is a chunk lookup and an index.
+// value -> handle is one Map, which V8 caps at 2^24 entries: interning more
+// distinct values is a RangeError.
+const JCELL_RC = 1 << 30, JCELL_MAXENTRIES = 1 << 24, JCELL_MAXPAGES = 256;
 const JCH = [];  // chunks: {lo, used, cap, vals}; address range [lo, lo + cap * 16)
-const JMAPS = [new Map()];  // value -> handle
+const JMAP = new Map();  // value -> handle
 let JCELL_PAGES = 16;
 function __newCell(v) {
   let c = JCH.length ? JCH[JCH.length - 1] : null;
@@ -137,16 +139,11 @@ function ewrap(v) {
   if (typeof v === "number" || typeof v === "bigint") return v;
   if (typeof v === "boolean") return v ? 1 : 0;
   if (v === null || v === undefined) return 0;
-  let h;
-  for (let i = 0; i < JMAPS.length; ++i) {
-    h = JMAPS[i].get(v);
-    if (h !== undefined) break;
-  }
+  let h = JMAP.get(v);
   if (h === undefined) {
+    if (JMAP.size >= JCELL_MAXENTRIES) throw new RangeError("too many distinct JS values (2^24)");
     h = __newCell(v);
-    let m = JMAPS[JMAPS.length - 1];
-    if (m.size >= JCELL_SHARD) JMAPS.push(m = new Map());
-    m.set(v, h);
+    JMAP.set(v, h);
   }
   I32[h >> 2] = JCELL_RC;
   return h;

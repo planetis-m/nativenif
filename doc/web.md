@@ -174,6 +174,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   decrement from there and the cell is never freed. Cells come from pages of
   their own (`memoryGrow`), not from the `osalloc` heap. Limits: the table pins
   every distinct JS value for the life of the program (it is never released),
+  so a program that wraps a stream of fresh objects leaks long before the
+  hard limits: at most 2^24 distinct live JS values (the next one throws a
+  `RangeError`), and a cell address must stay below 2 GiB (growing past it
+  throws `out of memory`),
   and the cell is empty, so field access or method dispatch through the handle
   in Nim is not supported (go through `importjs`). That includes inheritance:
   an upcast (`Node(element)`) is the same handle and works, but the cell has no
