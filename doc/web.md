@@ -135,7 +135,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   and exist only on the wasm32/standalone target; codegen names them
   directly (`nimStrBeginStore.0.<module>`, they are not overloaded), finds
   `nimStrDestroy` by exportc name, and refuses a program whose `string` has no
-  store procs. The 8-byte value itself lives in a frame
+  store procs. When the allocator cannot serve the string (`-d:nimMaxHeap`
+  with `nimHardenOutOfMem`), `nimStrBeginStore` returns nil and the string is
+  left as the runtime's sticky OOM value (`isOom`): the bridge copies nothing
+  and does not call `nimStrEndStore`. The 8-byte value itself lives in a frame
   temporary: a splice with a `string` result reserves one in the frame plan and
   takes it in codegen, like any aggregate-returning call (a handle or cstring
   result takes none), so `g(s(), s())` holds two distinct values. A callback
@@ -153,9 +156,11 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   twice or from two splices, are the same function, so
   `removeEventListener` matches. Not bridged, and refused by name: a plain
   aggregate as a splice RESULT (an aggregate argument is the address of a
-  copy), a `var`/`lent` string or `cstring` anywhere on the boundary, a
-  `sink` parameter and a `.raises` proc (nimsem). A scalar a JS caller omits
-  reaches a callback as `undefined`.
+  copy), a `var`/`lent` string or `cstring` anywhere on the boundary, and a
+  `.raises` proc (nimsem). A scalar a JS caller omits reaches a callback as
+  `undefined`. A `sink` parameter of an `importjs` proc is accepted but does
+  not transfer ownership: the template cannot destroy a Nim string, so hexer
+  treats the argument as borrowed and the caller destroys it after the call.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.
