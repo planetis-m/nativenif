@@ -647,17 +647,12 @@ proc pairWidths(c: Cursor): (WidthCode, WidthCode) =
     raiseAssert "jsrender: `" & $webTagOf(c) & "` has no destination width"
   result = (src, WidthCode(it.intVal))
 
-proc mayGrowMemory(c: Cursor): bool =
-  ## Whether evaluating `c` can run code that grows linear memory (and so
-  ## rebinds the views): a call of any kind, a splice, a handle wrap or the
-  ## grow node itself.
-  result = false
-  if c.kind != TagLit: return
-  if webTagOf(c) in {Call, ICall, Raw, EWrap, MemGrow}: return true
-  var it = c.firstChild
-  while it.hasMore and not result:
-    result = mayGrowMemory(it)
-    skip it
+var growSites = 0
+  ## How many nodes that can grow linear memory (and so rebind the views) the
+  ## renderer has printed so far: a call of any kind, a splice, a handle wrap or
+  ## the grow node itself. A load or store compares it before and after its
+  ## operands, which is one walk however deep the tree, where asking each
+  ## operand's subtree would rescan it under every enclosing load.
 
 proc operandTexts(c: Cursor; indent: int; w: out WidthCode): seq[string] =
   result = @[]
@@ -696,6 +691,7 @@ proc exprText(c: Cursor; indent: int): string =
   of InfLit: result = "Infinity"
   # ── composites
   of Call:
+    inc growSites
     var it = c.firstChild
     var fn = exprText(it, indent)
     if webTagOf(it) == Arrow:
@@ -738,6 +734,7 @@ proc exprText(c: Cursor; indent: int): string =
   of ICall:
     # (icall SIG TARGET ARG*) — the function-table slot; JS does not check
     # the signature, wasm's `call_indirect` does.
+    inc growSites
     var it = c.firstChild
     skip it                                      # the signature
     let fn = exprText(it, indent)
@@ -748,6 +745,7 @@ proc exprText(c: Cursor; indent: int): string =
       skip it
     result = "FTAB[" & fn & "](" & args.join(", ") & ")"
   of MemCopy, MemFill, MemGrow, Frame:
+    if webTagOf(c) == MemGrow: inc growSites
     var args: seq[string] = @[]
     var it = c.firstChild
     while it.hasMore:
@@ -789,9 +787,10 @@ proc exprText(c: Cursor; indent: int): string =
     var it = c.firstChild
     let w = opWidth(c)
     skip it
+    let sitesBefore = growSites
     let at = exprText(it, indent)
     let s = scaleOf(w)
-    if mayGrowMemory(it): return "__ld" & viewNames[w] & "(" & at & ")"
+    if growSites != sitesBefore: return "__ld" & viewNames[w] & "(" & at & ")"
     # Width 2+ goes through the DataView: a typed array at a fractional index
     # reads `undefined` and the store below vanishes — silent wrong code, the
     # one outcome worse than wasm's trap. The DataView needs no alignment and
@@ -802,17 +801,19 @@ proc exprText(c: Cursor; indent: int): string =
     var it = c.firstChild
     let w = opWidth(c)
     skip it
-    let atNode = it
+    let sitesBefore = growSites
     let at = exprText(it, indent)
     skip it
     let s = scaleOf(w)
     let val = exprText(it, indent)
-    if mayGrowMemory(atNode) or mayGrowMemory(it):
+    if growSites != sitesBefore:
       return "__st" & viewNames[w] & "(" & at & ", " & val & ")"
     if s == 1: result = "(" & viewNames[w] & "[" & at & "] = " & val & ")"
     else: result = "(DV." & dvSet[w] & "(" & at & ", " & val & ", true))"
   # ── extern bridge
-  of EWrap: result = "ewrap(" & exprText(c.firstChild, indent) & ")"
+  of EWrap:
+    inc growSites
+    result = "ewrap(" & exprText(c.firstChild, indent) & ")"
   of EUnwrap: result = "eunwrap(" & exprText(c.firstChild, indent) & ")"
   of EStrLit: result = "ewrap(" & escapeJsString(strVal(c.firstChild)) & ")"
   of Cvt:
@@ -875,6 +876,7 @@ proc exprText(c: Cursor; indent: int): string =
   of Raw:
     # (raw NAME TPL ARG*) — NAME is also what it lowers to, so
     # splicing here yields exactly what codegen would have emitted inline.
+    inc growSites
     var it = c.firstChild
     let name = nameOf(it)
     skip it
