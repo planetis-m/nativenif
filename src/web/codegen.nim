@@ -2410,12 +2410,6 @@ proc importjsTemplate(decl: Cursor): string =
         if a.kind == StrLit: result = strVal(a)
       skip p
 
-proc declName(decl: Cursor): SymId =
-  ## The symbol a `(proc :NAME …)` declares.
-  var d = decl
-  inc d
-  d.symId
-
 proc proctypeSig(g: var WebGen; pt: Cursor): (seq[Cursor], Cursor) =
   ## The parameter types and the return type of a `(proctype NAME PARAMS RET …)`.
   ## Read-only (`sub`): the cursors point into the caller's stable `decl` and are
@@ -2434,48 +2428,33 @@ proc proctypeSig(g: var WebGen; pt: Cursor): (seq[Cursor], Cursor) =
   skip p                                     # past PARAMS (a tag or a DotToken)
   (params, p)                                # p is now the RET child
 
-proc stringHelper(g: var WebGen; strType: Cursor; base, cname: string): SymId =
-  ## The proc named `base` that the module declaring `string` exports as
-  ## `cname` (`=destroy` is `nimStrDestroy`, `nimStrBeginStore` is its own
-  ## name), made reachable, or `SymId(0)` when the program declares none. The
-  ## overload number in its name is its module's business, so it is found by
-  ## that exportc name: in the main module's procs, or in the module that
-  ## declares `string`.
+proc reachableProc(g: var WebGen; sym: SymId): SymId =
+  ## `sym` made reachable, or `SymId(0)` when no module declares it.
   result = SymId(0)
-  let sty = strType.symId
-  if isForeignSym(g.prog, sty):
-    let s = splitSymName(poolSym(g.lengPool, sty))
-    result = foreignProcByExportc(g.prog, s.module, base, cname)
-  else:
-    for pi in g.prog.procs:
-      var d = pi.decl
-      var importcN, exportcN = ""
-      d.into:
-        inc d                                    # name
-        skip d                                   # params
-        skip d                                   # return type
-        parsePragmas(d, importcN, exportcN)
-        while d.hasMore: skip d
-      if exportcN == cname:
-        var nc = pi.decl
-        inc nc
-        result = symId(nc)
-        break
-  if result != SymId(0):
+  if sym != SymId(0):
     var found = false
-    let decl = procDeclOf(g, result, found)
-    if not found: return SymId(0)
-    ensureProc(g, result, decl)
+    let decl = procDeclOf(g, sym, found)
+    if found:
+      ensureProc(g, sym, decl)
+      result = sym
 
 proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
-  stringHelper(g, strType, "=destroy", "nimStrDestroy")
+  ## The destructor of the module declaring `string`, found by its exportc name
+  ## `nimStrDestroy` (its overload number is that module's business, and a Leng
+  ## type declaration does not carry the `(destroy S)` hook pragma), or
+  ## `SymId(0)` when the program declares none.
+  let module = splitSymName(poolSym(g.lengPool, strType.symId)).module
+  reachableProc(g, procByExportc(g.prog, module, "=destroy", "nimStrDestroy"))
 
 proc stringStoreProc(g: var WebGen; strType: Cursor; isEnd: bool): SymId =
   ## `nimStrBeginStore` (or `nimStrEndStore`) of the module declaring `string`,
   ## the entry points through which the bridge lets the Nim runtime build a
-  ## string. Refused by name when the program's `string` does not provide them.
+  ## string. They are not overloaded, so the name is the first of its kind in
+  ## that module (as hexer names `allocFixed.0.<system module>`). Refused by
+  ## name when the program's `string` does not provide them.
   let nm = if isEnd: "nimStrEndStore" else: "nimStrBeginStore"
-  result = stringHelper(g, strType, nm, nm)
+  let module = splitSymName(poolSym(g.lengPool, strType.symId)).module
+  result = reachableProc(g, lengSym(g, nm & ".0." & module))
   if result == SymId(0):
     err g, "`" & nm & "` is not available to bridge a string"
 
@@ -2660,6 +2639,7 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
   ## not its handle. A `Call` never unwraps — there a pointer is a real address.
   var p = decl
   p.into:
+    let callee = g.spell(p.symId)            # the proc, named in a refusal
     inc p                                    # name
     p.into:                                  # params
       while p.hasMore:
@@ -2676,7 +2656,7 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
           agg = isAggType(g, q)
           if splice:
             refuseStringPointer(g, q, "parameter `" & pname & "` of `" &
-                                      g.spell(declName(decl)) & "`")
+                                      callee & "`")
             bk = jsBridgeKind(g, q)
             if bk == jbCallback:
               # The declared type may be a named alias or a `ptr proctype`;
@@ -2708,7 +2688,7 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
             g.outp.closeTag
           of jbCallback:                     # Nim proc -> a JS callable
             callbackBridge(g, t, ptq, "callback parameter `" & pname & "` of `" &
-                                      g.spell(declName(decl)) & "`")
+                                      callee & "`")
           of jbNone:
             let (csz, _) = aggArgDestSize(g, t)
             if csz > 0: genAggArg(g, t, csz)
