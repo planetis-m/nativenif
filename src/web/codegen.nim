@@ -224,6 +224,16 @@ proc jsBridgeKind(g: var WebGen; t: Cursor): JsBridgeKind =
   elif isPtrType(g, t): jbHandle
   else: jbNone
 
+proc refuseStringPointer(g: var WebGen; t: Cursor; what: string) =
+  ## A `var`/`lent` string or cstring is a pointer to the Nim value, which the
+  ## bridge would take for a JS handle and unwrap to `undefined`. The bridge
+  ## converts a string BY VALUE, so a pointer to one is refused, naming `what`.
+  if isCstringType(g, t) or not isPtrType(g, t): return
+  let inner = innerType(g.prog, resolveType(g.prog, t))
+  if isNimStringType(g, inner) or isCstringType(g, inner):
+    err g, what & " is a pointer to a string (`var` or `lent`); an importjs " &
+           "boundary converts a string by value"
+
 proc isVoidType(t: Cursor): bool =
   t.kind == DotToken or (t.kind == TagLit and t.typeKind == VoidT)
 
@@ -2539,6 +2549,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   var bridged = false
   for i, pty in ptypes:
     let a = "a[" & $i & "]"
+    refuseStringPointer(g, pty, "parameter " & $i & " of a callback (" & owner & ")")
     case jsBridgeKind(g, pty)
     of jbNone:
       if isAggType(g, pty):
@@ -2572,6 +2583,8 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
     of jbCallback: err g, "a JS callback cannot take a Nim callback parameter (" & owner & ")"
   var retBridge = ""
   var strRet = default(Cursor)             # the result type, when it is a string
+  if not ret.cursorIsNil and ret.kind != DotToken:
+    refuseStringPointer(g, ret, "the result of a callback (" & owner & ")")
   case jsBridgeKind(g, ret)
   of jbNone:
     if not ret.cursorIsNil and ret.kind != DotToken and isAggType(g, ret):
@@ -2654,6 +2667,8 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
           skip q                             # pragmas
           agg = isAggType(g, q)
           if splice:
+            refuseStringPointer(g, q, "parameter `" & pname & "` of `" &
+                                      g.spell(declName(decl)) & "`")
             bk = jsBridgeKind(g, q)
             if bk == jbCallback:
               # The declared type may be a named alias or a `ptr proctype`;
@@ -2838,6 +2853,8 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
       # real JS value the splice produced, so it wraps back into the host
       # table (`ewrap`); scalars pass through as the splice's own number.
       let rt = calleeResultType(g, target)
+      if not rt.cursorIsNil:
+        refuseStringPointer(g, rt, "the result of `" & g.spell(nm) & "`")
       let rbk = if not rt.cursorIsNil: jsBridgeKind(g, rt) else: jbNone
       case rbk
       of jbString:

@@ -295,4 +295,10 @@ check "aggregate splice result refused by name",
   aggCode != 0 and aggOut.contains("importjs proc `mk.0") and
     aggOut.contains("aggregate"), aggOut
 
+# The same for a `var`/`lent` string, which is a pointer to the Nim value.
+let (spOut, spCode) = refusal("tsplice_strptr")
+check "var string splice parameter refused by name",
+  spCode != 0 and spOut.contains("parameter `s.0` of `show.0") and
+    spOut.contains("pointer to a string"), spOut
+
 echo "tcodegen: all checks passed"
