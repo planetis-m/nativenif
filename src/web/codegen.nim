@@ -2598,13 +2598,11 @@ proc wrapBody(g: var WebGen; w: CallbackWrap): string =
       result.add dn & "(f + " & $(8 * k) & "); "
   result.add "leave(); return v;"
 
-proc callbackWrapperText(w, body: string): string =
-  ## The JS wrapper `w(i)` for table slot `i`: null for the nil proc, else the
-  ## one function that bridges a JS call to the proc, made on first use.
-  "const " & w & "_m = new Map();\n" &
-  "function " & w & "(i) { if (i === 0) return null; let f = " & w & "_m.get(i); " &
-  "if (f === undefined) { const slot = FTAB[i]; f = (...a) => { " & body &
-  " }; " & w & "_m.set(i, f); } return f; }\n"
+proc callbackMaker(name, body: string): string =
+  ## The JS function `name(slot)` that wraps the Nim proc `slot` (a table
+  ## entry) for the host: the arrow function running `body`. `cbWrap` calls it
+  ## once per table slot.
+  "function " & name & "(slot) { return (...a) => { " & body & " }; }\n"
 
 proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
@@ -2625,33 +2623,29 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
     # Already JS-callable: hand over the function the table holds. Works for a
     # symbol or a stored fn-ptr — the index is whatever the operand evaluates to.
     g.outp.openTree Call
-    g.outp.ident "cbFn"
+    g.outp.ident "cbWrap"
     genExpr(g, t)
+    g.outp.ident "__cbSelf"
     g.outp.closeTag
     return
   # A wrapper bridges the JS call to the Nim proc. A named proc and a stored
   # fn-ptr (a `callbackInfo.callback` field, a slot variable) take the same
-  # path: the operand evaluates to a table slot, and the wrapper for a slot is
-  # built ONCE and memoized, so handing the same Nim proc to JS twice
-  # (addEventListener, then removeEventListener) gives JS the same function. Two
-  # sites with the same bridging share one wrapper. `FTAB[h]` is the Nim proc
+  # path: the operand evaluates to a table slot, and `cbWrap` builds the
+  # wrapper for a slot ONCE, so handing the same Nim proc to JS twice
+  # (addEventListener, then removeEventListener) gives JS the same function,
+  # from either site. `FTAB[h]` is the Nim proc
   # itself, so only the arguments need converting. The extra arguments a host may
   # pass (rAF's timestamp) are collected by the rest parameter and not
   # forwarded. A capturing closure stays out of reach: jorogumo carries no
   # environment.
   wrapStringProcs(g, w)
   let body = wrapBody(g, w)
-  var name = ""
-  for k in 0 ..< g.callbacks.len:
-    if g.callbacks[k] == callbackWrapperText("__cb" & $k, body):
-      name = "__cb" & $k
-      break
-  if name.len == 0:
-    name = "__cb" & $g.callbacks.len
-    g.callbacks.add callbackWrapperText(name, body)
+  let name = "__cb" & $g.callbacks.len
+  g.callbacks.add callbackMaker(name, body)
   g.outp.openTree Call
-  g.outp.ident name
+  g.outp.ident "cbWrap"
   genExpr(g, t)
+  g.outp.ident name
   g.outp.closeTag
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =

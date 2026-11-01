@@ -374,9 +374,17 @@ function jsCstrPut(d, e) {
   U8.set(e, d); U8[d + e.length] = 0;
   return d;
 }
-// A stored proc value handed to JS: the nil proc is null, not a function that
-// throws when called.
-function cbFn(i) { return i === 0 ? null : FTAB[i]; }
+// A Nim proc handed to JS as a callback: ONE JS function per table slot, however
+// many sites hand it over (addEventListener, then removeEventListener). `mk`
+// makes it from the Nim proc `FTAB[i]`: a site's own wrapper, or `__cbSelf` for
+// a proc that needs no bridging. The nil proc is null, not a function that throws.
+const __cbMemo = new Map(), __cbSelf = (f) => f;
+function cbWrap(i, mk) {
+  if (i === 0) return null;
+  let f = __cbMemo.get(i);
+  if (f === undefined) { f = mk(FTAB[i]); __cbMemo.set(i, f); }
+  return f;
+}
 function fillMem(d, v, n) { U8.fill(v, d, d + n); }
 """
   # The portable bit rows. wasm has i32.ctz/clz/popcount; JS has Math.clz32
