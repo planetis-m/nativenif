@@ -30,9 +30,9 @@
 ## shadow-stack frame — and its "value" is its address, exactly as in C.
 
 import std / [tables, sets, strutils, assertions, algorithm]
-import nifcore, nifcdecl
+import nifcore, nifcdecl, nifcoreparse
 import webnif, diag
-import "../arkham/core" / [asmslots, programs, typenav, typeutil]
+import "../arkham/core" / [asmslots, constdata, programs, typenav, typeutil]
 
 include compat2   # getOrQuit on host Nim
 
@@ -3140,15 +3140,27 @@ proc widthLit(g: var WebGen; w: WidthCode; v: int64) =
   if w in {wI64, wU64}: g.outp.bigIntLit $v
   else: g.outp.numLit v
 
+proc isCaseLiteral(c: Cursor): bool =
+  ## Whether a label is a scalar literal under the wrappers nimony leaves a
+  ## folded constant in: `(suf 3 "i32")`, `(neg …)`, `(par …)`, `(cast T …)`,
+  ## `(conv T …)`. A symbol or a float is not one.
+  var v = c
+  while v.kind == TagLit and v.exprKind in {SufC, ParC, CastC, ConvC, NegC}:
+    let skipsType = v.exprKind in {CastC, ConvC}
+    inc v
+    if skipsType: skip v                        # past the target type
+  result = v.kind in {IntLit, UIntLit, CharLit} or
+    (v.kind == TagLit and v.exprKind in {TrueC, FalseC})
+
 proc caseValue(g: var WebGen; r: Cursor): int64 =
-  ## The literal a case branch selects on. Only numbers and chars are labels;
-  ## anything else (a symbol constant, a range of them) is refused rather than
-  ## guessed at.
-  case r.kind
-  of IntLit: intVal(r)
-  of CharLit: int64(ord(charLit(r)))
-  else:
-    err g, "unsupported case label: " & $r.kind
+  ## The value a case branch selects on. nimony folds a named `const` (and an
+  ## enum value) into a literal before Leng, usually a suffixed one, so the
+  ## label is whatever `branchImm` reads, as in both native back ends. Anything
+  ## that is not a literal after unwrapping is refused by name.
+  if not isCaseLiteral(r):
+    err g, "unsupported case label: " & toString(r, includeLineInfo = false)
+  var v = r
+  result = branchImm(v)
 
 proc caseRangeTest(g: var WebGen; w: WidthCode; scrutinee: SymId; r: Cursor) =
   ## One `BranchRange` — a value, or `(range LO HI)` — as a test on the bound
