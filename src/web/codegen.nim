@@ -2435,16 +2435,18 @@ proc operandProcSym(g: var WebGen; t: Cursor): SymId =
   if c.kind == Symbol and lookupSym(typeCtx(g), c.symId).cat == scProc:
     result = symId(c)
 
-proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
-  ## The `=destroy` of a Nim `string` (`exportc "nimStrDestroy"`), made
-  ## reachable, or `SymId(0)` when the program declares none. The overload
-  ## number in its name is its module's business, so it is found by that exportc
-  ## name: in the main module's procs, or in the module that declares `string`.
+proc stringHelper(g: var WebGen; strType: Cursor; base, cname: string): SymId =
+  ## The proc named `base` that the module declaring `string` exports as
+  ## `cname` (`=destroy` is `nimStrDestroy`, `nimStrBeginStore` is its own
+  ## name), made reachable, or `SymId(0)` when the program declares none. The
+  ## overload number in its name is its module's business, so it is found by
+  ## that exportc name: in the main module's procs, or in the module that
+  ## declares `string`.
   result = SymId(0)
   let sty = strType.symId
   if isForeignSym(g.prog, sty):
     let s = splitSymName(poolSym(g.lengPool, sty))
-    result = foreignProcByExportc(g.prog, s.module, "=destroy", "nimStrDestroy")
+    result = foreignProcByExportc(g.prog, s.module, base, cname)
   else:
     for pi in g.prog.procs:
       var d = pi.decl
@@ -2455,7 +2457,7 @@ proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
         skip d                                   # return type
         parsePragmas(d, importcN, exportcN)
         while d.hasMore: skip d
-      if exportcN == "nimStrDestroy":
+      if exportcN == cname:
         var nc = pi.decl
         inc nc
         result = symId(nc)
@@ -2466,47 +2468,20 @@ proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
     if not found: return SymId(0)
     ensureProc(g, result, decl)
 
-proc nimAlloc(g: var WebGen; strType: Cursor): SymId =
-  ## The program's Nim allocator, `alloc(size)` of the module that declares
-  ## `string` (the counterpart of the `dealloc` in `destroyHeapStr`), made
-  ## reachable. A bridged string's payload is an ordinary `LongString` block
-  ## from it, so `=destroy` frees it. `alloc` has no `exportc`, so DCE keeps it
-  ## only through the always-rooted `nimBorrowCStringUnsafe`, which allocates
-  ## its long strings with it. Refused by name if the allocator is missing.
-  result = SymId(0)
-  let sty = strType.symId
-  if isForeignSym(g.prog, sty):
-    let s = splitSymName(poolSym(g.lengPool, sty))
-    result = foreignProcByParamCount(g.prog, s.module, "alloc", 1)
-  else:
-    for pi in g.prog.procs:
-      var d = pi.decl
-      var nc = d
-      inc nc
-      if poolSym(g.lengPool, symId(nc)).startsWith("alloc."):
-        var n = 0
-        d.into:
-          inc d
-          if d.kind == TagLit:
-            d.into:
-              while d.hasMore:
-                inc n
-                skip d
-          else:
-            skip d
-          while d.hasMore: skip d
-        if n == 1:
-          result = symId(nc)
-          break
+proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
+  stringHelper(g, strType, "=destroy", "nimStrDestroy")
+
+proc stringStoreProc(g: var WebGen; strType: Cursor; isEnd: bool): SymId =
+  ## `nimStrBeginStore` (or `nimStrEndStore`) of the module declaring `string`,
+  ## the entry points through which the bridge lets the Nim runtime build a
+  ## string. Refused by name when the program's `string` does not provide them.
+  let nm = if isEnd: "nimStrEndStore" else: "nimStrBeginStore"
+  result = stringHelper(g, strType, nm, nm)
   if result == SymId(0):
-    err g, "the Nim allocator `alloc` is not available to bridge a string"
-  var found = false
-  let decl = procDeclOf(g, result, found)
-  if not found: err g, "unknown allocator proc: " & poolSym(g.lengPool, result)
-  ensureProc(g, result, decl)
+    err g, "`" & nm & "` is not available to bridge a string"
 
 proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
-                  destroy: SymId; strArgs: seq[string]; allocName: string): string =
+                  destroy: SymId; strArgs: seq[string]; storeProcs: string): string =
   ## `strRet` is the nil cursor unless the result is a `string`. `strArgs` holds
   ## the JS expression of each `string` argument, in the order the call takes
   ## them (its `jsToNimStr` slots are `f + 8*k`).
@@ -2526,7 +2501,7 @@ proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
   let n = nSlots * 8
   result = "const f = frame(" & $n & "); U8.fill(0, f, f + " & $n & "); "
   for k, a in strArgs:
-    result.add "jsToNimStr(f + " & $(8 * k) & ", " & allocName & ", " & a & "); "
+    result.add "jsToNimStr(f + " & $(8 * k) & ", " & storeProcs & ", " & a & "); "
   let v = if retBridge.len > 0: rv else: call
   result.add "const v = " & v & "; "
   if destroy != SymId(0):
@@ -2607,9 +2582,10 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # stays out of reach: jorogumo carries no environment.
   let sym = operandProcSym(g, t)
   var destroy = SymId(0)
-  var allocName = ""
+  var storeProcs = ""                      # `nimStrBeginStore, nimStrEndStore`
   if not strTy.cursorIsNil:
-    allocName = poolSym(g.irPool, irName(g, nimAlloc(g, strTy)))
+    storeProcs = poolSym(g.irPool, irName(g, stringStoreProc(g, strTy, false))) & ", " &
+                 poolSym(g.irPool, irName(g, stringStoreProc(g, strTy, true)))
     destroy = stringDestroy(g, strTy)
   if not strRet.cursorIsNil:
     # the hidden result slot comes first, after the argument slots in the frame
@@ -2617,7 +2593,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   if sym == SymId(0):
     let w = "__cb" & $g.callbacks.len
     let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
-                            strRet, destroy, strArgs, allocName)
+                            strRet, destroy, strArgs, storeProcs)
     g.callbacks.add "function " & w & "(slot) { return (...a) => { " & body &
                     " }; }\n"
     g.outp.openTree Call
@@ -2637,7 +2613,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
   # declares; the extras are simply not forwarded.
   g.callbacks.add "function " & w & "(...a) { " &
-                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, allocName) & " }\n"
+                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, storeProcs) & " }\n"
   g.outp.ident w
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
@@ -2855,11 +2831,12 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
       case rbk
       of jbString:
         # The value is a `string` built in a frame temporary of this call
-        # (`planNode` reserved it): `jsToNimStr(dst, alloc, jsValue)`.
+        # (`planNode` reserved it): `jsToNimStr(dst, begin, end, jsValue)`.
         g.outp.openTree Call
         g.outp.ident "jsToNimStr"
         slotAddr(g, takeTemp(g, byteSize(g, rt), "importjs string result"))
-        g.outp.symUse irName(g, nimAlloc(g, rt))
+        g.outp.symUse irName(g, stringStoreProc(g, rt, false))
+        g.outp.symUse irName(g, stringStoreProc(g, rt, true))
       of jbCstring:
         g.outp.openTree Call
         g.outp.ident "jsToCstr"

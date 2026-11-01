@@ -1156,34 +1156,6 @@ proc foreignProcByExportc*(p: var Program; module, base, cname: string): SymId =
     if exportcN == cname:
       return symId(p.pool, name)
 
-proc foreignProcByParamCount*(p: var Program; module, base: string; params: int): SymId =
-  ## The proc of foreign module `module` named `base.<n>.<module>` that takes
-  ## exactly `params` parameters, or `SymId(0)`. For a proc with no `exportc`
-  ## whose name is shared by overloads (`alloc` is the region allocator's
-  ## two-parameter proc and the public one-parameter `alloc(size)`): the
-  ## overload number is the owning module's business, so the shape tells them
-  ## apart. Only the index keys are scanned; a decl is parsed once its name
-  ## matches.
-  result = SymId(0)
-  let m = loadModule(p, module)
-  let pre = base & "."
-  for name in m.index.keys:
-    if not name.startsWith(pre) or not name.endsWith("." & module): continue
-    var d = getDecl(m, name, p.tags, p.pool)
-    var n = 0
-    d.into:
-      inc d                                   # name
-      if d.kind == TagLit:
-        d.into:                               # params
-          while d.hasMore:
-            inc n
-            skip d
-      else:
-        skip d                                # no parameters: a DotToken
-      while d.hasMore: skip d
-    if n == params:
-      return symId(p.pool, name)
-
 proc gvarAsmName*(p: Program; sym: SymId): SymId =
   ## The asm-NIF symbol for a global reference: an importc/exportc gvar uses its
   ## bare C name (shared root-scope linkage across bundled modules); any other

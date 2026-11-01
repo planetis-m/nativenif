@@ -173,9 +173,10 @@ console.log(U8[$6]);
 # A string an `importjs` proc returns is an ordinary owned Nim string, built in
 # a frame temporary of the caller. `fixtures/tstrbridge.c.nif` splices strings
 # of 0, 3, 6 (the inline payload limit), 7 and 10 chars: only a string past the
-# payload allocates, from the program's `alloc`, with the `LongString` header
-# (fullLen = capImpl = n, rc = 0) behind the `HeapSlen` flag; two live results
-# of one expression do not share a slot; the inline cache is synced.
+# payload allocates. The fixture stubs the runtime's `nimStrBeginStore` and
+# `nimStrEndStore` (the bridge writes no layout of its own, it only calls them
+# and copies the bytes), and each string is checked by what it reads as; two
+# live results of one expression do not share a slot; every begin has its end.
 let sgPath = path.parentDir / "tstrbridge.c.nif"
 var sgBuf = parseFromFile(sgPath, sharedTags = tags)
 var sgMod = default(WebModule)
@@ -185,7 +186,7 @@ writeFile(sgJs, renderJs(sgTree, sgMod, 64 * 1024 * 1024, 64 * 1024))
 if nodeExe.len > 0:
   let sgr = execCmdEx(nodeExe & " " & quoteShell(sgJs))
   removeFile(sgJs)
-  check "bridged strings: inline up to the payload, Nim-allocated LongString past it",
+  check "bridged strings: inline up to the payload, Nim-built string",
     sgr.exitCode == 63, "exit " & $sgr.exitCode & "\n" & sgr.output
 
 # `importjs` callbacks run end to end. `fixtures/tcallback.c.nif` fires a named
@@ -227,7 +228,8 @@ if nodeExe.len > 0:
 # "alphabet" and "zero" (1 + 1 + 2 + 2). Each of the four returned strings is
 # destroyed once, after its conversion, and so is each of the two "alphabet"
 # arguments the wrapper built for the borrowed parameter (6 * 16); each of
-# those two came from the Nim allocator (2 * 64), "zero" fits inline.
+# those two were built long by the store entry points (2 * 64), "zero" fits
+# inline.
 let sbPath = path.parentDir / "tcbstring.c.nif"
 var sbBuf = parseFromFile(sbPath, sharedTags = tags)
 var sbMod = default(WebModule)

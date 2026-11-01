@@ -123,22 +123,26 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   caller's frame is gone, or a reentrant call, is safe), converts the result
   to a JS string and then runs the string's `=destroy`.
   **Strings.** A `string` an `importjs` proc returns (or a callback receives)
-  is an ordinary owned Nim string, freed by its normal `=destroy`. Up to 6
-  bytes (the inline payload) it is built in place with no allocation. A longer
-  one gets a `LongString` block (`fullLen` = `capImpl` = n, `rc` = 0) from the
-  program's own Nim allocator, `alloc(size)` of `system`, behind the
-  `HeapSlen` flag, with the inline cache synced so `==` and `hash` agree with a
-  literal of the same text. The 8-byte value itself lives in a frame
+  is an ordinary owned Nim string, freed by its normal `=destroy`. The JS side
+  knows nothing of the layout: it encodes the text, empties the slot (what
+  `=wasMoved` writes), asks the program's own `nimStrBeginStore(s, n)`
+  (`lib/std/system/stringimpl.nim`, a thin forward to `beginStore`) for the
+  address of the first byte, copies the bytes there through the live `U8` (the
+  call may have grown memory), and calls `nimStrEndStore(s)` (`endStore`), which
+  syncs the inline cache so `==` and `hash` agree with a literal of the same
+  text. Inline storage, the `LongString` block and the allocator are all
+  decided by that module. Both entry points are `exportc` (dead-code roots)
+  and exist only on the wasm32/standalone target; codegen finds them by
+  exportc name like `nimStrDestroy` and refuses a program whose `string` has
+  none. The 8-byte value itself lives in a frame
   temporary: a splice with a `string` result reserves one in the frame plan and
   takes it in codegen, like any aggregate-returning call (a handle or cstring
   result takes none), so `g(s(), s())` holds two distinct values. A callback
   wrapper that receives `string` arguments owns them (the Nim parameter is
   borrowed): it builds them in slots of its own frame and destroys them after
-  the call, together with the result slot. `alloc` has no `exportc`, so it
-  survives dead-code elimination only as the callee of the always-rooted
-  `nimBorrowCStringUnsafe`. A `cstring` result has no owner to free it, so it
-  is never freed, and it still comes from the `osalloc` bump heap, whose
-  ceiling (`SP_MIN`) limits the total cstring traffic of a program.
+  the call, together with the result slot. A `cstring` result has no owner to
+  free it, so it is never freed, and it still comes from the `osalloc` bump
+  heap, whose ceiling (`SP_MIN`) limits the total cstring traffic of a program.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.

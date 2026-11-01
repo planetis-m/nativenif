@@ -9,27 +9,77 @@
      (u 8)))))
  (gvar :bump.0 . (i 32) 1048576)
  (gvar :allocs.0 . (i 32) 0)
- (gvar :last.0 . (i 32) 0)
  (gvar :acc.0 . (i 32) 0)
- (proc :alloc.0.
+ (gvar :begins.0 . (i 32) 0)
+ (gvar :ends.0 . (i 32) 0)
+ (proc :nimStrBeginStore.0.
   (params
-   (param :size.0 . (i 32)))
+   (param :s.0 . (ptr string.0.tstrbridge))
+   (param :n.0 . (i 32)))
   (ptr
-   (void))
-  .
+   (u 8))
+  (pragmas
+   (exportc "nimStrBeginStore"))
   (stmts
-   (var :p.0 . (i 32) bump.0)
-   (asgn bump.0
+   (asgn begins.0
     (add
-     (i 32) bump.0 size.0))
-   (asgn allocs.0
+     (i 32) begins.0 1))
+   (if
+    (elif
+     (le n.0 6)
+     (stmts
+      (asgn
+       (dot
+        (deref s.0) bytes.0 0) n.0)
+      (ret
+       (cast
+        (ptr
+         (u 8))
+        (add
+         (i 32)
+         (cast
+          (i 32) s.0) 1)))))
+    (else
+     (stmts
+      (var :p.0 . (i 32) bump.0)
+      (asgn bump.0
+       (add
+        (i 32) bump.0
+        (add
+         (i 32) n.0 12)))
+      (asgn allocs.0
+       (add
+        (i 32) allocs.0 1))
+      (asgn
+       (deref
+        (cast
+         (ptr
+          (i 32)) p.0)) n.0)
+      (asgn
+       (dot
+        (deref s.0) bytes.0 0) 255)
+      (asgn
+       (dot
+        (deref s.0) more.0 0)
+       (cast
+        (ptr
+         (u 8)) p.0))
+      (ret
+       (cast
+        (ptr
+         (u 8))
+        (add
+         (i 32) p.0 12))))))))
+ (proc :nimStrEndStore.0.
+  (params
+   (param :s.0 . (ptr string.0.tstrbridge)))
+  .
+  (pragmas
+   (exportc "nimStrEndStore"))
+  (stmts
+   (asgn ends.0
     (add
-     (i 32) allocs.0 1))
-   (asgn last.0 p.0)
-   (ret
-    (cast
-     (ptr
-      (void)) p.0))))
+     (i 32) ends.0 1))))
  (proc :lng.0.
   (params)
   string.0.tstrbridge
@@ -81,19 +131,40 @@
   (pragmas
    (importjs "(#.length * 100 + #.length)"))
   (stmts .))
- (proc :peek8.0.
+ (proc :isLng.0.
   (params
-   (param :a.0 . (i 32)))
+   (param :v.0 . string.0.tstrbridge))
   (i 32)
   (pragmas
-   (importjs "U8[#]"))
+   (importjs "(# === '0123456789' ? 1 : 0)"))
   (stmts .))
- (proc :peek32.0.
+ (proc :isAbc.0.
   (params
-   (param :a.0 . (i 32)))
+   (param :v.0 . string.0.tstrbridge))
   (i 32)
   (pragmas
-   (importjs "DV.getInt32(#, true)"))
+   (importjs "(# === 'abc' ? 1 : 0)"))
+  (stmts .))
+ (proc :isSix.0.
+  (params
+   (param :v.0 . string.0.tstrbridge))
+  (i 32)
+  (pragmas
+   (importjs "(# === 'abcdef' ? 1 : 0)"))
+  (stmts .))
+ (proc :isSeven.0.
+  (params
+   (param :v.0 . string.0.tstrbridge))
+  (i 32)
+  (pragmas
+   (importjs "(# === 'abcdefg' ? 1 : 0)"))
+  (stmts .))
+ (proc :exit.0
+  (params
+   (param :code.0 . (i 32)))
+  .
+  (pragmas
+   (importc "exit"))
   (stmts .))
  (proc :main.0.
   (params)
@@ -102,10 +173,9 @@
    (exportc "main"))
   (stmts
    (var :x.0 . string.0.tstrbridge (call lng.0.))
-   (var :bx.0 . (i 32) last.0)
    (if
     (elif
-     (and (eq allocs.0 1) (and (eq (call len.0. x.0) 10) (and (eq (call peek32.0. bx.0) 10) (and (eq (call peek32.0. (add (i 32) bx.0 4)) 0) (and (eq (call peek32.0. (add (i 32) bx.0 8)) 10) (and (eq (call peek8.0. (cast (i 32) (addr x.0))) 255) (eq (call peek32.0. (add (i 32) (cast (i 32) (addr x.0)) 4)) bx.0)))))))
+     (and (eq allocs.0 1) (and (eq begins.0 1) (and (eq ends.0 1) (and (eq (call len.0. x.0) 10) (eq (call isLng.0. x.0) 1)))))
      (stmts
       (asgn acc.0 (add (i 32) acc.0 1)))))
    (var :y.0 . string.0.tstrbridge (call sht.0.))
@@ -113,13 +183,13 @@
    (var :s6.0 . string.0.tstrbridge (call six.0.))
    (if
     (elif
-     (and (eq allocs.0 1) (and (eq (call len.0. y.0) 3) (and (eq (call len.0. z.0) 0) (and (eq (call len.0. s6.0) 6) (and (eq (call peek8.0. (cast (i 32) (addr y.0))) 3) (and (eq (call peek8.0. (cast (i 32) (addr z.0))) 0) (eq (call peek8.0. (cast (i 32) (addr s6.0))) 6)))))))
+     (and (eq allocs.0 1) (and (eq (call len.0. y.0) 3) (and (eq (call len.0. z.0) 0) (and (eq (call len.0. s6.0) 6) (and (eq (call isAbc.0. y.0) 1) (eq (call isSix.0. s6.0) 1))))))
      (stmts
       (asgn acc.0 (add (i 32) acc.0 2)))))
    (var :s7.0 . string.0.tstrbridge (call seven.0.))
    (if
     (elif
-     (and (eq allocs.0 2) (and (eq (call len.0. s7.0) 7) (eq (call peek8.0. (cast (i 32) (addr s7.0))) 255)))
+     (and (eq allocs.0 2) (and (eq (call len.0. s7.0) 7) (eq (call isSeven.0. s7.0) 1)))
      (stmts
       (asgn acc.0 (add (i 32) acc.0 4)))))
    (if
@@ -134,7 +204,8 @@
       (asgn acc.0 (add (i 32) acc.0 16)))))
    (if
     (elif
-     (and (eq (call peek8.0. (add (i 32) (cast (i 32) (addr x.0)) 1)) 48) (and (eq (call peek8.0. (add (i 32) (cast (i 32) (addr x.0)) 3)) 50) (eq (call len.0. x.0) 10)))
+     (and (eq begins.0 ends.0) (eq (call isLng.0. x.0) 1))
      (stmts
       (asgn acc.0 (add (i 32) acc.0 32)))))
-   (ret acc.0))))
+   (call exit.0 acc.0)
+   (ret 0))))
