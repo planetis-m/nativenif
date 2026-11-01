@@ -71,6 +71,14 @@ proc fixturePath: string =
 
 let tags = createLengTagPool()   # NOT the web IR pool: a buffer is Leng-tagged or JS-tagged, never both
 
+if paramCount() == 2 and paramStr(1) == "--generate":
+  # Child mode for the refusal checks: `refuse` quits, so a refusal is read off
+  # a process, not caught.
+  var cbuf = parseFromFile(paramStr(2), sharedTags = tags)
+  var cm = default(WebModule)
+  discard generate(cbuf, paramStr(2), tags, wtJs, cm)
+  quit 0
+
 let path = fixturePath()
 var buf = parseFromFile(path, sharedTags = tags)
 var g = createWebGen(buf, path, tags)
@@ -257,5 +265,17 @@ if nodeExe.len > 0:
   removeFile(csJs)
   check "case labels: u64 labels past 2^53, scope bodies",
     csr.exitCode == 7, "exit " & $csr.exitCode & "\n" & csr.output
+
+# A plain aggregate has no JS spelling as a splice RESULT (an argument is its
+# address): refused, naming the proc, rather than read back as garbage.
+proc refusal(fixture: string): (string, int) =
+  execCmdEx(quoteShell(getAppFilename()) & " --generate " &
+            quoteShell(path.parentDir / fixture & ".c.nif"),
+            options = {poStdErrToStdOut})
+
+let (aggOut, aggCode) = refusal("tsplice_aggret")
+check "aggregate splice result refused by name",
+  aggCode != 0 and aggOut.contains("importjs proc `mk.0") and
+    aggOut.contains("aggregate"), aggOut
 
 echo "tcodegen: all checks passed"
