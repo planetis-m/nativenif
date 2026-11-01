@@ -21,6 +21,22 @@
     (i 32))
    (fld :f2.0 .
     (i 32))))
+ (gvar :bump.0 . (i 32) 1048576)
+ (proc :alloc.0.
+  (params
+   (param :size.0 . (i 32)))
+  (ptr
+   (void))
+  .
+  (stmts
+   (var :p.0 . (i 32) bump.0)
+   (asgn bump.0
+    (add
+     (i 32) bump.0 size.0))
+   (ret
+    (cast
+     (ptr
+      (void)) p.0))))
  (proc :s.0.
   (params)
   string.0.tsplice

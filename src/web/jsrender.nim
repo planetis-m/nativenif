@@ -286,7 +286,7 @@ function copyMem(d, s, n) { U8.copyWithin(d, s, s + n); }
   # These mirror `len`/`rawData` exactly, so short, medium, long and static all
   # decode correctly. TextEncoder/Decoder exist in both node and the browser.
   result.add """
-const __STR_PAYLOAD = 6, __STR_DATAOFF = 12, __STR_STATIC = 254;
+const __STR_PAYLOAD = 6, __STR_DATAOFF = 12, __STR_HEAP = 255;
 function nimStrToJs(s) {
   const sl = U8[s];
   if (sl <= __STR_PAYLOAD)
@@ -300,25 +300,38 @@ function cstrToJs(p) {
   return new TextDecoder("utf-8").decode(U8.subarray(p, e));
 }
 """
-  # A JS string back to Nim as a STATIC string (byte0=254, capImpl=0): the GC's
-  # `=destroy` frees only a HeapSlen string, so a bridge result is never freed
-  # and never refcounted — it leaks rather than risk a bad refcount (plan §6
-  # first-cut liveness, matching the never-released handle table). The inline
-  # cache (first 3 chars at value+1) is synced so `==`/`hash` agree with a
-  # compiler literal of the same text.
+  # A JS string back to Nim as an ordinary OWNED `string` written into `dst`
+  # (a frame temporary of the caller, or of a callback wrapper): the Nim
+  # destructor frees it like any other. `alloc` is the program's own Nim
+  # allocator (`alloc(size)` of `system`), never `osalloc`, whose bump heap is
+  # capped by SP_MIN. Up to `__STR_PAYLOAD` bytes the chars sit inline in the
+  # 8-byte value (slen = the length, the unused bytes zero) and nothing is
+  # allocated. A longer string is a `LongString` block laid out as
+  # `initLongString` does (fullLen = capImpl = n, rc = 0, data at
+  # `__STR_DATAOFF`) behind `HeapSlen`, which is what makes `=destroy` free it,
+  # and the inline cache (first 3 chars at dst+1) is synced so `==`/`hash` agree
+  # with a compiler literal of the same text. The caller owns the result.
   result.add """
-function jsToNimStr(v) {
+function jsToNimStr(dst, alloc, v) {
   const enc = new TextEncoder().encode(typeof v === "string" ? v : String(v));
   const n = enc.length;
-  const p = osalloc(0, __STR_DATAOFF + n + 1);
-  DV.setInt32(p + 0, n, true); DV.setInt32(p + 4, 0, true); DV.setInt32(p + 8, 0, true);
-  U8.set(enc, p + __STR_DATAOFF); U8[p + __STR_DATAOFF + n] = 0;
-  const val = osalloc(0, 8);
-  U8[val] = __STR_STATIC;
-  for (let i = 0; i < 3 && i < n; ++i) U8[val + 1 + i] = enc[i];
-  DV.setUint32(val + 4, p, true);
-  return val;
+  DV.setUint32(dst, 0, true); DV.setUint32(dst + 4, 0, true);
+  if (n <= __STR_PAYLOAD) {
+    U8[dst] = n;
+    U8.set(enc, dst + 1);
+    return dst;
+  }
+  const p = alloc(__STR_DATAOFF + n);
+  if (p === 0) throw new Error("out of memory");
+  DV.setInt32(p, n, true); DV.setInt32(p + 4, 0, true); DV.setInt32(p + 8, n, true);
+  U8.set(enc, p + __STR_DATAOFF);
+  U8[dst] = __STR_HEAP;
+  for (let i = 0; i < 3; ++i) U8[dst + 1 + i] = enc[i];
+  DV.setUint32(dst + 4, p, true);
+  return dst;
 }
+// A cstring has no owner to free it, so it is never freed. It comes from the
+// bump heap (`osalloc`), so total cstring traffic is capped by SP_MIN.
 function jsToCstr(v) {
   const enc = new TextEncoder().encode(typeof v === "string" ? v : String(v));
   const n = enc.length;

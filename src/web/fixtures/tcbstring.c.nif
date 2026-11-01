@@ -17,6 +17,26 @@
    (params)
    string.0.tcbstring .))
  (gvar :destroyed.0 . (i 32) 0)
+ (gvar :bump.0 . (i 32) 1048576)
+ (gvar :allocs.0 . (i 32) 0)
+ (proc :alloc.0.
+  (params
+   (param :size.0 . (i 32)))
+  (ptr
+   (void))
+  .
+  (stmts
+   (var :p.0 . (i 32) bump.0)
+   (asgn bump.0
+    (add
+     (i 32) bump.0 size.0))
+   (asgn allocs.0
+    (add
+     (i 32) allocs.0 1))
+   (ret
+    (cast
+     (ptr
+      (void)) p.0))))
  (gvar :slotS.0 . CbS.0.tcbstring
   (nil))
  (gvar :slotZ.0 . CbZ.0.tcbstring
@@ -39,7 +59,7 @@
    (param :cb.0 . CbS.0.tcbstring))
   (i 32)
   (pragmas
-   (importjs "(#('alpha') === 'alpha' ? 1 : 0)"))
+   (importjs "(#('alphabet') === 'alphabet' ? 1 : 0)"))
   (stmts .))
  (proc :fireZ.0.
   (params
@@ -99,7 +119,11 @@
      (call fireZ.0. slotZ.0)))
    (call exit.0
     (add
-     (i 32) r.0
+     (i 32)
+     (add
+      (i 32) r.0
+      (mul
+       (i 32) destroyed.0 16))
      (mul
-      (i 32) destroyed.0 16)))
+      (i 32) allocs.0 64)))
    (ret 0))))

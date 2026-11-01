@@ -162,8 +162,9 @@ console.log(U8[$6]);
     "14\nhello jorogumo\ntrue\n4294967296\n7,8,9\n1,0\n0"
 
   # The frame plan and the lowering walk the same tree. An `importjs` string
-  # splice is no call, so it has no sret slot; a slot planned for it shifted
-  # every later temporary (a 12-byte constructor met an 8-byte slot).
+  # splice takes a frame temporary for its result (a handle or cstring splice
+  # takes none); a mismatch shifted every later temporary (a 12-byte
+  # constructor met an 8-byte slot).
   # `fixtures/tsplice.c.nif` splices a string, builds a pair of strings and
   # passes a constructor to a call; 3 + 3 + (5 + 7 + 11) is the exit code.
   let splicePath = path.parentDir / "tsplice.c.nif"
@@ -176,6 +177,24 @@ console.log(U8[$6]);
   let sr = execCmdEx(nodeExe & " " & quoteShell(spliceJs))
   check "splice then constructors: the plan matches the lowering",
     sr.exitCode == 29, "exit " & $sr.exitCode & "\n" & sr.output
+
+# A string an `importjs` proc returns is an ordinary owned Nim string, built in
+# a frame temporary of the caller. `fixtures/tstrbridge.c.nif` splices strings
+# of 0, 3, 6 (the inline payload limit), 7 and 10 chars: only a string past the
+# payload allocates, from the program's `alloc`, with the `LongString` header
+# (fullLen = capImpl = n, rc = 0) behind the `HeapSlen` flag; two live results
+# of one expression do not share a slot; the inline cache is synced.
+let sgPath = path.parentDir / "tstrbridge.c.nif"
+var sgBuf = parseFromFile(sgPath, sharedTags = tags)
+var sgMod = default(WebModule)
+var sgTree = generate(sgBuf, sgPath, tags, wtJs, sgMod)
+let sgJs = getTempDir() / "jorogumo_strbridge_" & $getCurrentProcessId() & ".js"
+writeFile(sgJs, renderJs(sgTree, sgMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let sgr = execCmdEx(nodeExe & " " & quoteShell(sgJs))
+  removeFile(sgJs)
+  check "bridged strings: inline up to the payload, Nim-allocated LongString past it",
+    sgr.exitCode == 63, "exit " & $sgr.exitCode & "\n" & sgr.output
 
 # `importjs` callbacks run end to end. `fixtures/tcallback.c.nif` fires a named
 # proc and a stored fn-ptr with `null`, `undefined`, an object, a function and a
@@ -213,8 +232,10 @@ if nodeExe.len > 0:
 # A callback that returns a `string` (an aggregate, through the hidden first
 # parameter): `fixtures/tcbstring.c.nif` fires one with a parameter and one
 # with none, each as a named proc and as a stored fn-ptr. The host must see
-# "alpha" and "zero" (1 + 1 + 2 + 2), and each of the four returned strings is
-# destroyed once, after its conversion (4 * 16).
+# "alphabet" and "zero" (1 + 1 + 2 + 2). Each of the four returned strings is
+# destroyed once, after its conversion, and so is each of the two "alphabet"
+# arguments the wrapper built for the borrowed parameter (6 * 16); each of
+# those two came from the Nim allocator (2 * 64), "zero" fits inline.
 let sbPath = path.parentDir / "tcbstring.c.nif"
 var sbBuf = parseFromFile(sbPath, sharedTags = tags)
 var sbMod = default(WebModule)
@@ -225,7 +246,7 @@ if nodeExe.len > 0:
   let sr2 = execCmdEx(nodeExe & " " & quoteShell(sbJs))
   removeFile(sbJs)
   check "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed",
-    sr2.exitCode == 70, "exit " & $sr2.exitCode & "\n" & sr2.output
+    sr2.exitCode == 230, "exit " & $sr2.exitCode & "\n" & sr2.output
 
 # A closure value cannot cross an `importjs` boundary (jorogumo carries no
 # environment): refused, naming the operand, wherever it appears.

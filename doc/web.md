@@ -122,6 +122,23 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   shadow-stack frame for the hidden result slot (so a timer firing after the
   caller's frame is gone, or a reentrant call, is safe), converts the result
   to a JS string and then runs the string's `=destroy`.
+  **Strings.** A `string` an `importjs` proc returns (or a callback receives)
+  is an ordinary owned Nim string, freed by its normal `=destroy`. Up to 6
+  bytes (the inline payload) it is built in place with no allocation. A longer
+  one gets a `LongString` block (`fullLen` = `capImpl` = n, `rc` = 0) from the
+  program's own Nim allocator, `alloc(size)` of `system`, behind the
+  `HeapSlen` flag, with the inline cache synced so `==` and `hash` agree with a
+  literal of the same text. The 8-byte value itself lives in a frame
+  temporary: a splice with a `string` result reserves one in the frame plan and
+  takes it in codegen, like any aggregate-returning call (a handle or cstring
+  result takes none), so `g(s(), s())` holds two distinct values. A callback
+  wrapper that receives `string` arguments owns them (the Nim parameter is
+  borrowed): it builds them in slots of its own frame and destroys them after
+  the call, together with the result slot. `alloc` has no `exportc`, so it
+  survives dead-code elimination only as the callee of the always-rooted
+  `nimBorrowCStringUnsafe`. A `cstring` result has no owner to free it, so it
+  is never freed, and it still comes from the `osalloc` bump heap, whose
+  ceiling (`SP_MIN`) limits the total cstring traffic of a program.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.

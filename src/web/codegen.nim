@@ -1550,13 +1550,16 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
     # fall through: the generic walk plans the action and the argument copies
   var nest = needsTemp
   # An `importjs` splice is no call: its result is the JS value `jsToNimStr`
-  # (or `ewrap`) wraps in place, so it has no sret destination, and it takes
-  # bridge-typed arguments (string, cstring, handle, callback) as JS values,
+  # (or `ewrap`) wraps in place, so a handle or cstring result has no sret
+  # destination. A `string` result DOES: `jsToNimStr` fills a frame temporary
+  # and the expression's value is its address (the splice branch of
+  # `genCallFrom` takes it). A splice takes bridge-typed arguments (string, cstring, handle, callback) as JS values,
   # NOT as fresh Nim copies — `genCallArgs` emits the conversion instead of
   # `genAggArg`. The plan must skip those reservations or the two walks
   # desynchronize.
   var spliceBridges: seq[JsBridgeKind] = default(seq[JsBridgeKind])
   var isSplice = false
+  var spliceStrRet = false
   if c.exprKind == CallC:
     var tg = sub(c)
     if tg.kind == Symbol:
@@ -1564,6 +1567,8 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
       let decl = procDeclOf(g, symId(tg), found)
       if found and not hasBody(decl) and hasPragma(decl, ImportjsP):
         isSplice = true
+        let srt = callResultType(g, c)
+        spliceStrRet = not srt.cursorIsNil and jsBridgeKind(g, srt) == jbString
         var p = decl
         p.into:
           inc p                                # name
@@ -1586,7 +1591,7 @@ proc planNode(g: var WebGen; pl: var FramePlan; c: Cursor; needsTemp: bool) =
     g.p.tmpPlan.add TempSlot(off: pl.off, size: sz)
     pl.off += max(sz, 8)
     nest = false                             # nested constructors fill in place
-  elif not isSplice:
+  elif not isSplice or spliceStrRet:
     let (dsz, dal) = callDestSize(g, c)
     if dsz > 0:
       pl.off = align(pl.off, dal)
@@ -2496,24 +2501,74 @@ proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
     if not found: return SymId(0)
     ensureProc(g, result, decl)
 
-proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
-                  destroy: SymId): string =
-  ## `strRet` is the nil cursor unless the result is a `string`.
-  ## The body of a callback wrapper around `call`. A `string` result comes back
-  ## through the hidden first parameter, so `call` already carries the slot `r`;
-  ## the slot is a shadow-stack frame of the wrapper's own, because the JS host
-  ## may call after the Nim caller's frame is gone (a timer) or while another is
-  ## live (reentrancy). The Nim string is converted, then destroyed: the callee
-  ## handed over its ownership.
-  if strRet.cursorIsNil:
-    result = "return " & (if retBridge.len > 0: retBridge & "(" & call & ")" else: call) & ";"
+proc nimAlloc(g: var WebGen; strType: Cursor): SymId =
+  ## The program's Nim allocator, `alloc(size)` of the module that declares
+  ## `string` (the counterpart of the `dealloc` in `destroyHeapStr`), made
+  ## reachable. A bridged string's payload is an ordinary `LongString` block
+  ## from it, so `=destroy` frees it. `alloc` has no `exportc`, so DCE keeps it
+  ## only through the always-rooted `nimBorrowCStringUnsafe`, which allocates
+  ## its long strings with it. Refused by name if the allocator is missing.
+  result = SymId(0)
+  let sty = strType.symId
+  if isForeignSym(g.prog, sty):
+    let s = splitSymName(poolSym(g.lengPool, sty))
+    result = foreignProcByParamCount(g.prog, s.module, "alloc", 1)
   else:
-    let n = $byteSize(g, strRet)
-    result = "const r = frame(" & n & "); U8.fill(0, r, r + " & n & "); " &
-             "const v = " & retBridge & "(" & call & "); "
-    if destroy != SymId(0):
-      result.add poolSym(g.irPool, irName(g, destroy)) & "(r); "
-    result.add "leave(); return v;"
+    for pi in g.prog.procs:
+      var d = pi.decl
+      var nc = d
+      inc nc
+      if poolSym(g.lengPool, symId(nc)).startsWith("alloc."):
+        var n = 0
+        d.into:
+          inc d
+          if d.kind == TagLit:
+            d.into:
+              while d.hasMore:
+                inc n
+                skip d
+          else:
+            skip d
+          while d.hasMore: skip d
+        if n == 1:
+          result = symId(nc)
+          break
+  if result == SymId(0):
+    err g, "the Nim allocator `alloc` is not available to bridge a string"
+  var found = false
+  let decl = procDeclOf(g, result, found)
+  if not found: err g, "unknown allocator proc: " & poolSym(g.lengPool, result)
+  ensureProc(g, result, decl)
+
+proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
+                  destroy: SymId; strArgs: seq[string]; allocName: string): string =
+  ## `strRet` is the nil cursor unless the result is a `string`. `strArgs` holds
+  ## the JS expression of each `string` argument, in the order the call takes
+  ## them (its `jsToNimStr` slots are `f + 8*k`).
+  ## The body of a callback wrapper around `call`. The wrapper owns a shadow
+  ## stack frame of its own, because the JS host may call after the Nim
+  ## caller's frame is gone (a timer) or while another is live (reentrancy). It
+  ## holds one 8-byte slot per `string` argument and, after them, the hidden
+  ## result slot: a `string` result comes back through the hidden first
+  ## parameter, so `call` already carries the slot `r`. A `string` parameter is
+  ## borrowed by the Nim proc, so the wrapper owns what `jsToNimStr` built for
+  ## it. The result is converted, then everything the wrapper owns is
+  ## destroyed (the callee handed over its result's ownership).
+  let nSlots = strArgs.len + (if strRet.cursorIsNil: 0 else: 1)
+  let rv = retBridge & "(" & call & ")"
+  if nSlots == 0:
+    return "return " & (if retBridge.len > 0: rv else: call) & ";"
+  let n = nSlots * 8
+  result = "const f = frame(" & $n & "); U8.fill(0, f, f + " & $n & "); "
+  for k, a in strArgs:
+    result.add "jsToNimStr(f + " & $(8 * k) & ", " & allocName & ", " & a & "); "
+  let v = if retBridge.len > 0: rv else: call
+  result.add "const v = " & v & "; "
+  if destroy != SymId(0):
+    let dn = poolSym(g.irPool, irName(g, destroy))
+    for k in 0 ..< nSlots:
+      result.add dn & "(f + " & $(8 * k) & "); "
+  result.add "leave(); return v;"
 
 proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
@@ -2526,6 +2581,8 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## `owner` names the operand for a refusal.
   let (ptypes, ret) = proctypeSig(g, pt)
   var argExprs: seq[string] = @[]
+  var strArgs: seq[string] = @[]           # JS value of each `string` argument
+  var strTy = default(Cursor)              # the `string` type, once one is seen
   var bridged = false
   for i, pty in ptypes:
     let a = "a[" & $i & "]"
@@ -2547,8 +2604,17 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
       # interned handle) that passes through untouched.
       argExprs.add "ewrap(" & a & ")"
       bridged = true
-    of jbString:  argExprs.add "jsToNimStr(" & a & ")"; bridged = true
-    of jbCstring: argExprs.add "jsToCstr(" & a & ")"; bridged = true
+    of jbString:
+      # The Nim parameter is borrowed, so the wrapper owns the string: it
+      # builds it in a slot of its own frame and destroys it after the call.
+      argExprs.add "f + " & $(8 * strArgs.len)
+      strArgs.add a
+      strTy = pty
+      bridged = true
+    of jbCstring:
+      # A cstring has no owner to free it: it stays allocated (see `jsToCstr`).
+      argExprs.add "jsToCstr(" & a & ")"
+      bridged = true
     of jbCallback: err g, "a JS callback cannot take a Nim callback parameter (" & owner & ")"
     of jbClosure:
       err g, "a JS callback cannot take a {.closure.} parameter: parameter " & $i &
@@ -2560,7 +2626,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
     if not ret.cursorIsNil and ret.kind != DotToken and isAggType(g, ret):
       err g, "a JS callback cannot return an aggregate struct"
   of jbHandle:  retBridge = "eunwrap"; bridged = true
-  of jbString:  retBridge = "nimStrToJs"; bridged = true; strRet = ret
+  of jbString:  retBridge = "nimStrToJs"; bridged = true; strRet = ret; strTy = ret
   of jbCstring: retBridge = "cstrToJs"; bridged = true
   of jbCallback: err g, "a JS callback cannot return a Nim callback (" & owner & ")"
   of jbClosure: err g, "a JS callback cannot return a {.closure.} proc: " & owner
@@ -2580,13 +2646,17 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # stays out of reach: jorogumo carries no environment.
   let sym = operandProcSym(g, t)
   var destroy = SymId(0)
+  var allocName = ""
+  if not strTy.cursorIsNil:
+    allocName = poolSym(g.irPool, irName(g, nimAlloc(g, strTy)))
+    destroy = stringDestroy(g, strTy)
   if not strRet.cursorIsNil:
-    argExprs.insert "r", 0                 # the hidden result slot comes first
-    destroy = stringDestroy(g, strRet)
+    # the hidden result slot comes first, after the argument slots in the frame
+    argExprs.insert "f + " & $(8 * strArgs.len), 0
   if sym == SymId(0):
     let w = "__cb" & $g.callbacks.len
     let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
-                            strRet, destroy)
+                            strRet, destroy, strArgs, allocName)
     g.callbacks.add "function " & w & "(slot) { return (...a) => { " & body &
                     " }; }\n"
     g.outp.openTree Call
@@ -2606,7 +2676,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
   # declares; the extras are simply not forwarded.
   g.callbacks.add "function " & w & "(...a) { " &
-                  callbackBody(g, call, retBridge, strRet, destroy) & " }\n"
+                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, allocName) & " }\n"
   g.outp.ident w
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
@@ -2827,8 +2897,12 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
       let rbk = if not rt.cursorIsNil: jsBridgeKind(g, rt) else: jbNone
       case rbk
       of jbString:
+        # The value is a `string` built in a frame temporary of this call
+        # (`planNode` reserved it): `jsToNimStr(dst, alloc, jsValue)`.
         g.outp.openTree Call
         g.outp.ident "jsToNimStr"
+        slotAddr(g, takeTemp(g, byteSize(g, rt), "importjs string result"))
+        g.outp.symUse irName(g, nimAlloc(g, rt))
       of jbCstring:
         g.outp.openTree Call
         g.outp.ident "jsToCstr"
