@@ -195,6 +195,11 @@ console.log(U8[$6]);
 #   by the store entry points (2 * 64), "zero" fits inline.
 # * tcase: switches u64 scrutinees: a range at the top of the u64 domain (+1), a
 #   label above 2^53 that its neighbour must not match (+2, +4).
+# * toomstr: the runtime's `nimStrBeginStore` returns nil when the allocation
+#   failed and leaves the string as the OOM cookie. The bridge must then write no
+#   bytes (not to address 0) and not call `end`: the exit code is the cookie's
+#   low word alone (`bytes` below, 6 = 1296125702 mod 256, plus nothing from
+#   `ends` or from a corrupted word 0).
 # * tcnil: fires a callback that takes a `cstring` with null (the nil cstring,
 #   +1) and with "abc" three times (borrowed bytes in the wrapper's frame,
 #   NUL-terminated, +2 each); a nil stored proc, a nil cstring and a splice
@@ -223,6 +228,8 @@ const fixtureRuns = [
              label: "case labels: u64 labels past 2^53"),
   FixtureRun(file: "tcnil", exitCode: 247,
              label: "null at the bridge: nil cstring, nil proc, callback cstring in the frame"),
+  FixtureRun(file: "toomstr", exitCode: 6,
+             label: "a failed string allocation: no write through nil, no end"),
   FixtureRun(file: "tgrowstore", exitCode: 5,
              label: "a store whose value grows memory lands in the live buffer")]
 

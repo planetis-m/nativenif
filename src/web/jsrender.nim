@@ -316,8 +316,9 @@ function cstrToJs(p) {
   # destructor frees it like any other. The layout is not known here at all.
   # `begin`/`end` are the program's own `nimStrBeginStore`/`nimStrEndStore`
   # (lib/std/system/stringimpl.nim): `begin(dst, n)` sets the length, picks
-  # inline or long storage and returns the address of the first byte, `end(dst)`
-  # syncs the inline cache. The slot starts as an empty string, which is what
+  # inline or long storage and returns the address of the first byte (0 when the
+  # allocation failed, which leaves `dst` the sticky OOM string, `isOom`),
+  # `end(dst)` syncs the inline cache. The slot starts as an empty string, which is what
   # `=wasMoved` writes (`bytes = 0`). `begin` may grow linear memory, so the
   # bytes go through `U8` read AFTER it. The caller owns the result.
   result.add """
@@ -326,6 +327,7 @@ function jsToNimStr(dst, begin, end, v) {
   const enc = jsCstrEnc(v) || new Uint8Array(0);
   DV.setUint32(dst, 0, true);
   const p = begin(dst, enc.length);
+  if (p === 0) return dst;  // out of memory: `dst` is the sticky OOM string, nothing to fill
   U8.set(enc, p);
   end(dst);
   return dst;
