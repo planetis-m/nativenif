@@ -177,6 +177,22 @@ console.log(U8[$6]);
   check "splice then constructors: the plan matches the lowering",
     sr.exitCode == 29, "exit " & $sr.exitCode & "\n" & sr.output
 
+# `importjs` callbacks run end to end. `fixtures/tcallback.c.nif` fires a named
+# proc and a stored fn-ptr with `null`, `undefined`, an object, a function and a
+# number: the first two must arrive as nil (+1 each), the object and the
+# function as handles (+2 each), the number untouched (+16).
+let cbPath = path.parentDir / "tcallback.c.nif"
+var cbBuf = parseFromFile(cbPath, sharedTags = tags)
+var cbMod = default(WebModule)
+var cbTree = generate(cbBuf, cbPath, tags, wtJs, cbMod)
+let cbJs = getTempDir() / "jorogumo_callback_" & $getCurrentProcessId() & ".js"
+writeFile(cbJs, renderJs(cbTree, cbMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let cr = execCmdEx(nodeExe & " " & quoteShell(cbJs))
+  removeFile(cbJs)
+  check "handle callback arguments: null, undefined, object, function, number",
+    cr.exitCode == 22, "exit " & $cr.exitCode & "\n" & cr.output
+
 # A closure value cannot cross an `importjs` boundary (jorogumo carries no
 # environment): refused, naming the operand, wherever it appears.
 proc refusal(fixture: string): (string, int) =

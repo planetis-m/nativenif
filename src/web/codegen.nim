@@ -2491,12 +2491,11 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
         discard
       argExprs.add a
     of jbHandle:
-      # A host that hands over a JS object gets an EXT handle for it. A
-      # number is already a raw value — a Nim address (userdata) or an
-      # interned handle — and must pass through untouched, so a pointer a
-      # Nim caller stored in `userdata` arrives as the same pointer.
-      argExprs.add "(typeof " & a & " === \"object\" && " & a &
-                   " !== null ? ewrap(" & a & ") : " & a & ")"
+      # `ewrap` is the one conversion of a host value to a handle: an object
+      # or function is interned, `null`/`undefined` are the nil handle 0, and
+      # a number is already a raw value (a Nim address passed as userdata, or an
+      # interned handle) that passes through untouched.
+      argExprs.add "ewrap(" & a & ")"
       bridged = true
     of jbString:  argExprs.add "jsToNimStr(" & a & ")"; bridged = true
     of jbCstring: argExprs.add "jsToCstr(" & a & ")"; bridged = true
