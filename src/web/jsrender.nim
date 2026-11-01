@@ -323,7 +323,7 @@ function cstrToJs(p) {
   result.add """
 function jsToNimStr(dst, begin, end, v) {
   // A Nim string has no nil: null and undefined are the empty string.
-  const enc = new TextEncoder().encode(typeof v === "string" ? v : v == null ? "" : String(v));
+  const enc = jsCstrEnc(v) || new Uint8Array(0);
   DV.setUint32(dst, 0, true);
   const p = begin(dst, enc.length);
   U8.set(enc, p);
@@ -334,12 +334,8 @@ function jsToNimStr(dst, begin, end, v) {
 // comes from the bump heap (`osalloc`), so total such traffic is capped by
 // SP_MIN. null and undefined are the nil cstring.
 function jsToCstr(v) {
-  if (v === null || v === undefined) return 0;
-  const enc = new TextEncoder().encode(typeof v === "string" ? v : String(v));
-  const n = enc.length;
-  const p = osalloc(0, n + 1);
-  U8.set(enc, p); U8[p + n] = 0;
-  return p;
+  const e = jsCstrEnc(v);
+  return e === null ? 0 : jsCstrPut(osalloc(0, e.length + 1), e);
 }
 """
   # Length-based bridges, for the C shapes that are neither a Nim string nor
