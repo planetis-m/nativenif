@@ -18,7 +18,7 @@
 ## named type defined in any module classifies correctly (e.g. a cross-module
 ## `enum` parameter is a scalar in a register, not a stack aggregate).
 
-import std / [tables, assertions, sets, syncio]
+import std / [tables, assertions, sets, syncio, strutils]
 import nifcore, nifcdecl, nifcoreparse
 import asmslots, nifmodules
 import "../../../../nimony/src/lib" / [symparser, nifreader, intrinsics]
@@ -1133,6 +1133,28 @@ proc lookupForeignDecl*(p: var Program; sym: SymId; found: var bool): Cursor =
   result = getDecl(m, name, p.tags, p.pool)
   p.requestedForeign.add (sym, result)
   found = true
+
+proc foreignProcByExportc*(p: var Program; module, base, cname: string): SymId =
+  ## The proc of foreign module `module` whose name is `base.<n>.<module>` and
+  ## whose `exportc` is `cname` (`=destroy` for `string` is `nimStrDestroy`), or
+  ## `SymId(0)`. A hook's overload number is the owning module's business, so the
+  ## exportc name is what identifies it. Only the index keys are scanned; a decl
+  ## is parsed once its name matches.
+  result = SymId(0)
+  let m = loadModule(p, module)
+  let pre = base & "."
+  for name in m.index.keys:
+    if not name.startsWith(pre) or not name.endsWith("." & module): continue
+    var d = getDecl(m, name, p.tags, p.pool)
+    var importcN, exportcN = ""
+    d.into:
+      inc d                                   # name
+      skip d                                  # params
+      skip d                                  # return type
+      parsePragmas(d, importcN, exportcN)
+      while d.hasMore: skip d
+    if exportcN == cname:
+      return symId(p.pool, name)
 
 proc gvarAsmName*(p: Program; sym: SymId): SymId =
   ## The asm-NIF symbol for a global reference: an importc/exportc gvar uses its

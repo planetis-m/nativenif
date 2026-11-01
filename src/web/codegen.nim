@@ -30,7 +30,7 @@
 ## shadow-stack frame — and its "value" is its address, exactly as in C.
 
 import std / [tables, sets, strutils, assertions, algorithm]
-import nifcore, nifcdecl, nifcoreparse
+import nifcore, nifcdecl, nifcoreparse, symparser
 import webnif, diag
 import "../arkham/core" / [asmslots, constdata, programs, typenav, typeutil]
 
@@ -2465,6 +2465,56 @@ proc operandProcSym(g: var WebGen; t: Cursor): SymId =
   if c.kind == Symbol and lookupSym(typeCtx(g), c.symId).cat == scProc:
     result = symId(c)
 
+proc stringDestroy(g: var WebGen; strType: Cursor): SymId =
+  ## The `=destroy` of a Nim `string` (`exportc "nimStrDestroy"`), made
+  ## reachable, or `SymId(0)` when the program declares none. The overload
+  ## number in its name is its module's business, so it is found by that exportc
+  ## name: in the main module's procs, or in the module that declares `string`.
+  result = SymId(0)
+  let sty = strType.symId
+  if isForeignSym(g.prog, sty):
+    let s = splitSymName(poolSym(g.lengPool, sty))
+    result = foreignProcByExportc(g.prog, s.module, "=destroy", "nimStrDestroy")
+  else:
+    for pi in g.prog.procs:
+      var d = pi.decl
+      var importcN, exportcN = ""
+      d.into:
+        inc d                                    # name
+        skip d                                   # params
+        skip d                                   # return type
+        parsePragmas(d, importcN, exportcN)
+        while d.hasMore: skip d
+      if exportcN == "nimStrDestroy":
+        var nc = pi.decl
+        inc nc
+        result = symId(nc)
+        break
+  if result != SymId(0):
+    var found = false
+    let decl = procDeclOf(g, result, found)
+    if not found: return SymId(0)
+    ensureProc(g, result, decl)
+
+proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
+                  destroy: SymId): string =
+  ## `strRet` is the nil cursor unless the result is a `string`.
+  ## The body of a callback wrapper around `call`. A `string` result comes back
+  ## through the hidden first parameter, so `call` already carries the slot `r`;
+  ## the slot is a shadow-stack frame of the wrapper's own, because the JS host
+  ## may call after the Nim caller's frame is gone (a timer) or while another is
+  ## live (reentrancy). The Nim string is converted, then destroyed: the callee
+  ## handed over its ownership.
+  if strRet.cursorIsNil:
+    result = "return " & (if retBridge.len > 0: retBridge & "(" & call & ")" else: call) & ";"
+  else:
+    let n = $byteSize(g, strRet)
+    result = "const r = frame(" & n & "); U8.fill(0, r, r + " & n & "); " &
+             "const v = " & retBridge & "(" & call & "); "
+    if destroy != SymId(0):
+      result.add poolSym(g.irPool, irName(g, destroy)) & "(r); "
+    result.add "leave(); return v;"
+
 proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
   ## setTimeout, a DOM listener). The JS host calls it with plain JS values; we
@@ -2504,12 +2554,13 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
       err g, "a JS callback cannot take a {.closure.} parameter: parameter " & $i &
              " of " & owner
   var retBridge = ""
+  var strRet = default(Cursor)             # the result type, when it is a string
   case jsBridgeKind(g, ret)
   of jbNone:
     if not ret.cursorIsNil and ret.kind != DotToken and isAggType(g, ret):
       err g, "a JS callback cannot return an aggregate struct"
   of jbHandle:  retBridge = "eunwrap"; bridged = true
-  of jbString:  retBridge = "nimStrToJs"; bridged = true
+  of jbString:  retBridge = "nimStrToJs"; bridged = true; strRet = ret
   of jbCstring: retBridge = "cstrToJs"; bridged = true
   of jbCallback: err g, "a JS callback cannot return a Nim callback (" & owner & ")"
   of jbClosure: err g, "a JS callback cannot return a {.closure.} proc: " & owner
@@ -2528,12 +2579,16 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # proc itself, so only the arguments need converting. A capturing closure
   # stays out of reach: jorogumo carries no environment.
   let sym = operandProcSym(g, t)
+  var destroy = SymId(0)
+  if not strRet.cursorIsNil:
+    argExprs.insert "r", 0                 # the hidden result slot comes first
+    destroy = stringDestroy(g, strRet)
   if sym == SymId(0):
     let w = "__cb" & $g.callbacks.len
-    var dynCall = "slot(" & argExprs.join(", ") & ")"
-    if retBridge.len > 0: dynCall = retBridge & "(" & dynCall & ")"
-    g.callbacks.add "function " & w & "(slot) { return (...a) => " & dynCall &
-                    "; }\n"
+    let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
+                            strRet, destroy)
+    g.callbacks.add "function " & w & "(slot) { return (...a) => { " & body &
+                    " }; }\n"
     g.outp.openTree Call
     g.outp.ident w
     g.outp.openTree Index
@@ -2547,11 +2602,11 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   if not found: err g, "unknown callback proc: " & poolSym(g.lengPool, sym)
   ensureProc(g, sym, cdecl)
   let w = "__cb" & $g.callbacks.len
-  var call = poolSym(g.irPool, irName(g, sym)) & "(" & argExprs.join(", ") & ")"
-  if retBridge.len > 0: call = retBridge & "(" & call & ")"
+  let call = poolSym(g.irPool, irName(g, sym)) & "(" & argExprs.join(", ") & ")"
   # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
   # declares; the extras are simply not forwarded.
-  g.callbacks.add "function " & w & "(...a) { return " & call & "; }\n"
+  g.callbacks.add "function " & w & "(...a) { " &
+                  callbackBody(g, call, retBridge, strRet, destroy) & " }\n"
   g.outp.ident w
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =

@@ -118,6 +118,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   the exports land on `globalThis.NIF` instead of `module.exports`). A
   bodyless `importjs` proc splices its template at the call site, and Nim
   strings, cstrings, JS object handles and callbacks are bridged across it.
+  A callback that returns a `string` gets a wrapper that opens its own
+  shadow-stack frame for the hidden result slot (so a timer firing after the
+  caller's frame is gone, or a reentrant call, is safe), converts the result
+  to a JS string and then runs the string's `=destroy`.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.

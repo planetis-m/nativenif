@@ -193,6 +193,23 @@ if nodeExe.len > 0:
   check "handle callback arguments: null, undefined, object, function, number",
     cr.exitCode == 22, "exit " & $cr.exitCode & "\n" & cr.output
 
+# A callback that returns a `string` (an aggregate, through the hidden first
+# parameter): `fixtures/tcbstring.c.nif` fires one with a parameter and one
+# with none, each as a named proc and as a stored fn-ptr. The host must see
+# "alpha" and "zero" (1 + 1 + 2 + 2), and each of the four returned strings is
+# destroyed once, after its conversion (4 * 16).
+let sbPath = path.parentDir / "tcbstring.c.nif"
+var sbBuf = parseFromFile(sbPath, sharedTags = tags)
+var sbMod = default(WebModule)
+var sbTree = generate(sbBuf, sbPath, tags, wtJs, sbMod)
+let sbJs = getTempDir() / "jorogumo_cbstring_" & $getCurrentProcessId() & ".js"
+writeFile(sbJs, renderJs(sbTree, sbMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let sr2 = execCmdEx(nodeExe & " " & quoteShell(sbJs))
+  removeFile(sbJs)
+  check "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed",
+    sr2.exitCode == 70, "exit " & $sr2.exitCode & "\n" & sr2.output
+
 # A closure value cannot cross an `importjs` boundary (jorogumo carries no
 # environment): refused, naming the operand, wherever it appears.
 proc refusal(fixture: string): (string, int) =

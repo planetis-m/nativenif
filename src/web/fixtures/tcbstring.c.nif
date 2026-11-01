@@ -1,0 +1,105 @@
+(.nif27)
+(stmts@,1,tcbstring.nim
+ (type :string.0.tcbstring .
+  (object .
+   (fld :bytes.0 .
+    (u 32))
+   (fld :more.0 .
+    (ptr
+     (u 8)))))
+ (type :CbS.0.tcbstring .
+  (proctype .
+   (params
+    (param :s.0 . string.0.tcbstring))
+   string.0.tcbstring .))
+ (type :CbZ.0.tcbstring .
+  (proctype .
+   (params)
+   string.0.tcbstring .))
+ (gvar :destroyed.0 . (i 32) 0)
+ (gvar :slotS.0 . CbS.0.tcbstring
+  (nil))
+ (gvar :slotZ.0 . CbZ.0.tcbstring
+  (nil))
+ (proc :exit.0
+  (params
+   (param :code.0 . (i 32)))
+  .
+  (pragmas
+   (importc "exit"))
+  (stmts .))
+ (proc :zero.0.
+  (params)
+  string.0.tcbstring
+  (pragmas
+   (importjs "'zero'"))
+  (stmts .))
+ (proc :fireS.0.
+  (params
+   (param :cb.0 . CbS.0.tcbstring))
+  (i 32)
+  (pragmas
+   (importjs "(#('alpha') === 'alpha' ? 1 : 0)"))
+  (stmts .))
+ (proc :fireZ.0.
+  (params
+   (param :cb.0 . CbZ.0.tcbstring))
+  (i 32)
+  (pragmas
+   (importjs "(#() === 'zero' ? 2 : 0)"))
+  (stmts .))
+ (proc :nimStrDestroy.0.
+  (params
+   (param :s.0 . string.0.tcbstring))
+  .
+  (pragmas
+   (exportc "nimStrDestroy"))
+  (stmts
+   (asgn destroyed.0
+    (add
+     (i 32) destroyed.0 1))))
+ (proc :echoS.0.
+  (params
+   (param :s.0 . string.0.tcbstring))
+  string.0.tcbstring
+  .
+  (stmts
+   (ret s.0)))
+ (proc :zeroS.0.
+  (params)
+  string.0.tcbstring
+  .
+  (stmts
+   (ret
+    (call zero.0.))))
+ (proc :main.0.
+  (params)
+  (i 32)
+  (pragmas
+   (exportc "main"))
+  (stmts
+   (asgn slotS.0 echoS.0.)
+   (asgn slotZ.0 zeroS.0.)
+   (var :r.0 . (i 32) 0)
+   (asgn r.0
+    (add
+     (i 32) r.0
+     (call fireS.0. echoS.0.)))
+   (asgn r.0
+    (add
+     (i 32) r.0
+     (call fireS.0. slotS.0)))
+   (asgn r.0
+    (add
+     (i 32) r.0
+     (call fireZ.0. zeroS.0.)))
+   (asgn r.0
+    (add
+     (i 32) r.0
+     (call fireZ.0. slotZ.0)))
+   (call exit.0
+    (add
+     (i 32) r.0
+     (mul
+      (i 32) destroyed.0 16)))
+   (ret 0))))
