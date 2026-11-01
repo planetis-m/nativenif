@@ -193,7 +193,7 @@ function memoryGrow(pages) {
   # `f` that grows memory stores into the old, abandoned buffer and the write
   # vanishes. These helpers take the evaluated operands first and read the live
   # view inside.
-  for w in WidthCode:
+  for w in wI8 .. wF64:
     let ld = if w in {wI8, wU8}: viewNames[w] & "[a]" else: "DV." & dvGet[w] & "(a, true)"
     let st = if w in {wI8, wU8}: viewNames[w] & "[a] = v" else: "DV." & dvSet[w] & "(a, v, true)"
     result.add "function __ld" & viewNames[w] & "(a) { return " & ld & "; }\n"
@@ -647,7 +647,7 @@ proc pairWidths(c: Cursor): (WidthCode, WidthCode) =
     raiseAssert "jsrender: `" & $webTagOf(c) & "` has no destination width"
   result = (src, WidthCode(it.intVal))
 
-var growSites = 0
+var growSites {.threadvar.}: int
   ## How many nodes that can grow linear memory (and so rebind the views) the
   ## renderer has printed so far: a call of any kind, a splice, a handle wrap or
   ## the grow node itself. A load or store compares it before and after its

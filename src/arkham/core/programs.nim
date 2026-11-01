@@ -1162,7 +1162,7 @@ proc procByExportc*(p: var Program; module, base, cname: string): SymId =
   else:
     let m = loadModule(p, module)
     let pre = base & "."
-    for name in m.index.keys:
+    for name in uncheckedBorrow(m.index).keys:
       if name.startsWith(pre) and name.endsWith("." & module) and
           exportcName(getDecl(m, name, p.tags, p.pool)) == cname:
         return symId(p.pool, name)

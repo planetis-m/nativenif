@@ -2549,7 +2549,9 @@ proc wrapStringProcs(g: var WebGen; w: var CallbackWrap) =
                    poolSym(g.irPool, irName(g, stringStoreProc(g, w.strTy, true)))
     w.destroy = stringDestroy(g, w.strTy)
   if w.strRet:
-    w.argExprs.insert "f + " & $(8 * w.strArgs.len), 0
+    var args = @["f + " & $(8 * w.strArgs.len)]
+    for a in w.argExprs: args.add a
+    w.argExprs = args
 
 proc wrapBody(g: var WebGen; w: CallbackWrap): string =
   ## The body of the arrow function that wraps the Nim proc in `slot`. The
