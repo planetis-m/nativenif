@@ -193,6 +193,23 @@ if nodeExe.len > 0:
   check "handle callback arguments: null, undefined, object, function, number",
     cr.exitCode == 22, "exit " & $cr.exitCode & "\n" & cr.output
 
+# Handle identity (doc/web.md): `fixtures/thandle.c.nif` takes `globalThis`
+# twice (equal handles, +1), two fresh objects (different handles, +2), a
+# handle through an `importjs` identity splice (+4), and checks that a crossing
+# STORES the huge count into the cell at offset 0 even after the program
+# clobbered it (+8) and that the handle is a 16-aligned address (+16).
+let hdPath = path.parentDir / "thandle.c.nif"
+var hdBuf = parseFromFile(hdPath, sharedTags = tags)
+var hdMod = default(WebModule)
+var hdTree = generate(hdBuf, hdPath, tags, wtJs, hdMod)
+let hdJs = getTempDir() / "jorogumo_handle_" & $getCurrentProcessId() & ".js"
+writeFile(hdJs, renderJs(hdTree, hdMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let hr = execCmdEx(nodeExe & " " & quoteShell(hdJs))
+  removeFile(hdJs)
+  check "handle identity: one JS value, one handle; the cell count is restored",
+    hr.exitCode == 31, "exit " & $hr.exitCode & "\n" & hr.output
+
 # A callback that returns a `string` (an aggregate, through the hidden first
 # parameter): `fixtures/tcbstring.c.nif` fires one with a parameter and one
 # with none, each as a named proc and as a stored fn-ptr. The host must see

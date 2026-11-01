@@ -125,6 +125,19 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   A handle a callback receives goes through `ewrap`: `null` and `undefined`
   are the nil handle, a number passes through, an object or function is
   interned.
+  **Handle identity.** A handle is the address of a 16-byte cell in linear
+  memory that stands for one JS value, so one JS value has exactly one handle
+  for the life of the program and `==` on handles is JS identity
+  (`shared() == shared()` is true, two fresh objects compare false). Declare a
+  handle as `ref object` or `ptr object`; both work and behave the same.
+  A `ref` handle is seen by ARC as an address whose refcount is at offset 0,
+  so every crossing stores a huge count (1<<30) into the cell: destroys only
+  decrement from there and the cell is never freed. Cells come from pages of
+  their own (`memoryGrow`), not from the `osalloc` heap. Limits: the table pins
+  every distinct JS value for the life of the program (it is never released),
+  and the cell is empty, so field access or method dispatch through the handle
+  in Nim is not supported (go through `importjs`). `eunwrap` of a number that
+  is no handle (a Nim address passed as userdata) yields `undefined`.
   A `{.closure.}` proc cannot cross: as a parameter or result of an
   `importjs` proc, or nested in a callback's own signature, it is refused by
   name (jorogumo carries no environment). A `nimcall` proc, named or held in

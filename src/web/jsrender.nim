@@ -98,18 +98,67 @@ let I8 = new Int8Array(JMEM), U8 = new Uint8Array(JMEM),
     F32 = new Float32Array(JMEM), F64 = new Float64Array(JMEM),
     BI64 = new BigInt64Array(JMEM), BU64 = new BigUint64Array(JMEM),
     DV = new DataView(JMEM);  // width-2+ heap access: no alignment trap, no vanishing store
-const EXT = [];  // extern value table: handle -> real JS value (§6)
 const FTAB = []; // function table: slot -> JS function; 0 is the null pointer
-let JSP = [null];  // the same table, grown by ewrap
+// HANDLE TABLE (§6). A handle is the address of a CELL in linear memory: 16
+// bytes at a 16-byte boundary, an interned, immortal stand-in for a JS value.
+// A handle typed `ref object` reaches ARC, which treats it as an address and
+// keeps the refcount at offset 0 of the target (ORC/YRC: a `(rc, rootIdx)`
+// header, 16 bytes, which the cell has room for). One JS value has one handle
+// for the life of the program, so `==` on handles is JS identity.
+// Every crossing STORES (not increments) 1<<30 into the cell's count. A `ptr`
+// handle is never touched by ARC, so it cannot overflow; a `ref` handle's
+// matching destroy only decrements from a huge value, and "last reference" is
+// a count below 0 (ARC) or with no bits above the flag bits (ORC), so it needs
+// about a billion net decrements with no crossing in between. The cell is
+// therefore never freed, and `deallocFixed` never sees it.
+// Cells are NOT osalloc memory (that heap is capped by SP_MIN and would die of
+// `out of memory` on cells alone): they come from pages of their own, obtained
+// with `memoryGrow` in chunks that double up to JCELL_MAXPAGES, which also keeps
+// the copy memoryGrow does amortized. The chunk's values live in a parallel
+// array, so handle -> value is a chunk lookup and an index. A Map holds at most
+// 2^24 entries, so value -> handle is sharded.
+const JCELL_RC = 1 << 30, JCELL_SHARD = 1 << 22, JCELL_MAXPAGES = 256;
+const JCH = [];  // chunks: {lo, used, cap, vals}; address range [lo, lo + cap * 16)
+const JMAPS = [new Map()];  // value -> handle
+let JCELL_PAGES = 16;
+function __newCell(v) {
+  let c = JCH.length ? JCH[JCH.length - 1] : null;
+  if (c === null || c.used === c.cap) {
+    const old = memoryGrow(JCELL_PAGES);
+    if (old < 0 || (old + JCELL_PAGES) * 65536 > 2147483647) throw new Error("out of memory");
+    c = {lo: old * 65536, used: 0, cap: JCELL_PAGES * 4096, vals: []};
+    JCH.push(c);
+    if (JCELL_PAGES < JCELL_MAXPAGES) JCELL_PAGES *= 2;
+  }
+  c.vals.push(v);
+  return c.lo + 16 * c.used++;
+}
 function ewrap(v) {
   if (typeof v === "number" || typeof v === "bigint") return v;
   if (typeof v === "boolean") return v ? 1 : 0;
   if (v === null || v === undefined) return 0;
-  const h = JSP.length; JSP.push(v); return h | 0;
+  let h;
+  for (let i = 0; i < JMAPS.length; ++i) {
+    h = JMAPS[i].get(v);
+    if (h !== undefined) break;
+  }
+  if (h === undefined) {
+    h = __newCell(v);
+    let m = JMAPS[JMAPS.length - 1];
+    if (m.size >= JCELL_SHARD) JMAPS.push(m = new Map());
+    m.set(v, h);
+  }
+  I32[h >> 2] = JCELL_RC;
+  return h;
 }
 function eunwrap(h) {
   if (typeof h === "bigint") return Number(h);
-  return h < 1 ? null : JSP[h];
+  if (h < 1) return null;
+  for (let i = JCH.length - 1; i >= 0; --i) {
+    const c = JCH[i], d = h - c.lo;
+    if (d >= 0 && d < c.used * 16) return (d & 15) === 0 ? c.vals[d >> 4] : undefined;
+  }
+  return undefined;  // a raw number that is no handle (a Nim address as userdata)
 }
 const __internExt = ewrap; // splice-facing alias: intern a host value as a handle
 """
@@ -772,7 +821,7 @@ proc exprText(c: Cursor; indent: int): string =
       of wI32, wU32: "bitsf32(" & v & ")"
       else: raiseAssert "jsrender: cannot reinterpret " & $fromW & " as " & $toW
   of Raw:
-    # (raw NAME TPL ARG*) — NAME is also the `EXT` entry it lowers to, so
+    # (raw NAME TPL ARG*) — NAME is also what it lowers to, so
     # splicing here yields exactly what codegen would have emitted inline.
     var it = c.firstChild
     let name = nameOf(it)
