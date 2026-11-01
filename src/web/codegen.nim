@@ -204,47 +204,13 @@ proc isProctypeType(g: var WebGen; t: Cursor): bool =
     r = resolveType(g.prog, inner)
   r.kind == TagLit and r.typeKind == ProctypeT
 
-proc isClosureType(g: var WebGen; t: Cursor): bool =
-  ## A closure VALUE: the lowered `(object . (fld PROCTYPE) (fld (ptr ENV)))`
-  ## pair, whose proctype ends in the env parameter `ep.0` hexer appends to a
-  ## closure's signature. Leng has no closure type of its own, so this is how
-  ## one is told from an ordinary two-field object holding a plain proc.
-  result = false
-  var r = resolveType(g.prog, t)
-  if r.kind != TagLit or r.typeKind != ObjectT: return
-  r.into:
-    skip r                                   # the base
-    if r.hasMore and r.kind == TagLit and r.substructureKind == FldU:
-      var f = r
-      f.into:                                # (fld :name pragmas type)
-        inc f
-        skip f
-        var pt = resolveType(g.prog, f)
-        if pt.kind == TagLit and pt.typeKind == ProctypeT:
-          var p = pt
-          p.into:
-            skip p                           # name
-            if p.kind == TagLit and p.typeKind == ParamsT:
-              var ps = p
-              ps.into:
-                while ps.hasMore:
-                  var q = ps
-                  q.into:
-                    result = q.kind == SymbolDef and symName(q).contains("ep.0")
-                    while q.hasMore: skip q
-                  skip ps
-            while p.hasMore: skip p
-        while f.hasMore: skip f
-    while r.hasMore: skip r
-
 type
-  JsBridgeKind = enum jbNone, jbString, jbCstring, jbHandle, jbCallback, jbClosure
+  JsBridgeKind = enum jbNone, jbString, jbCstring, jbHandle, jbCallback
 
 proc jsBridgeKind(g: var WebGen; t: Cursor): JsBridgeKind =
   ## How a type crosses an `importjs` splice boundary, in precedence order: a
   ## Nim `string` (decode the SSO struct), a `cstring` (NUL-terminated bytes),
-  ## a closure value (refused wherever it crosses: jorogumo carries no
-  ## environment), a proctype (a Nim proc used as a JS callback), then any other pointer/ref as
+  ## a proctype (a Nim proc used as a JS callback), then any other pointer/ref as
   ## a JS HANDLE — an opaque int32 index into the host value table (plan §6): a
   ## binding declares a JS object (`GPUBuffer`, a canvas context, …) as an opaque
   ## `ref object`/pointer and touches it only through `importjs`, so at the splice
@@ -254,7 +220,6 @@ proc jsBridgeKind(g: var WebGen; t: Cursor): JsBridgeKind =
   ## jbNone and pass through untouched.
   if isNimStringType(g, t): jbString
   elif isCstringType(g, t): jbCstring
-  elif isClosureType(g, t): jbClosure
   elif isProctypeType(g, t): jbCallback
   elif isPtrType(g, t): jbHandle
   else: jbNone
@@ -2616,9 +2581,6 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
       argExprs.add "jsToCstr(" & a & ")"
       bridged = true
     of jbCallback: err g, "a JS callback cannot take a Nim callback parameter (" & owner & ")"
-    of jbClosure:
-      err g, "a JS callback cannot take a {.closure.} parameter: parameter " & $i &
-             " of " & owner
   var retBridge = ""
   var strRet = default(Cursor)             # the result type, when it is a string
   case jsBridgeKind(g, ret)
@@ -2629,7 +2591,6 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   of jbString:  retBridge = "nimStrToJs"; bridged = true; strRet = ret; strTy = ret
   of jbCstring: retBridge = "cstrToJs"; bridged = true
   of jbCallback: err g, "a JS callback cannot return a Nim callback (" & owner & ")"
-  of jbClosure: err g, "a JS callback cannot return a {.closure.} proc: " & owner
 
   if not bridged:
     # Already JS-callable: hand over the function the table holds. Works for a
@@ -2707,9 +2668,6 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
           agg = isAggType(g, q)
           if splice:
             bk = jsBridgeKind(g, q)
-            if bk == jbClosure:
-              err g, "an importjs proc cannot take a {.closure.} proc: parameter `" &
-                     pname & "` of `" & g.spell(declName(decl)) & "`"
             if bk == jbCallback:
               # The declared type may be a named alias or a `ptr proctype`;
               # resolve both layers to the signature itself (calleeProctype's
@@ -2738,7 +2696,6 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
             g.outp.openTree EUnwrap
             g.genExprCoerced(t, w)
             g.outp.closeTag
-          of jbClosure: discard              # refused above, when classified
           of jbCallback:                     # Nim proc -> a JS callable
             callbackBridge(g, t, ptq, "callback parameter `" & pname & "` of `" &
                                       g.spell(declName(decl)) & "`")
@@ -2909,9 +2866,6 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
       of jbHandle:
         g.outp.openTree EWrap
       of jbNone: discard
-      of jbClosure:
-        err g, "an importjs proc cannot return a {.closure.} proc: result of `" &
-               g.spell(nm) & "`"
       of jbCallback:
         # A splice handing a JS function back to Nim would need the reverse
         # bridge (a JS callable stored as a table-shaped value); nothing needs

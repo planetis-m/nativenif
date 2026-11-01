@@ -71,14 +71,6 @@ proc fixturePath: string =
 
 let tags = createLengTagPool()   # NOT the web IR pool: a buffer is Leng-tagged or JS-tagged, never both
 
-if paramCount() == 2 and paramStr(1) == "--generate":
-  # Child mode for the refusal checks: `refuse` quits, so a refusal is read off
-  # a process, not caught.
-  var cbuf = parseFromFile(paramStr(2), sharedTags = tags)
-  var cm = default(WebModule)
-  discard generate(cbuf, paramStr(2), tags, wtJs, cm)
-  quit 0
-
 let path = fixturePath()
 var buf = parseFromFile(path, sharedTags = tags)
 var g = createWebGen(buf, path, tags)
@@ -247,20 +239,5 @@ if nodeExe.len > 0:
   removeFile(sbJs)
   check "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed",
     sr2.exitCode == 230, "exit " & $sr2.exitCode & "\n" & sr2.output
-
-# A closure value cannot cross an `importjs` boundary (jorogumo carries no
-# environment): refused, naming the operand, wherever it appears.
-proc refusal(fixture: string): (string, int) =
-  execCmdEx(quoteShell(getAppFilename()) & " --generate " &
-            quoteShell(path.parentDir / fixture & ".c.nif"),
-            options = {poStdErrToStdOut})
-
-for (fixture, operand) in [("tclosure_param", "`cb.0`"),
-                           ("tclosure_result", "`mk.0"),
-                           ("tclosure_cbarg", "parameter `cb.0`"),
-                           ("tclosure_cbret", "parameter `cb.0`")]:
-  let (out1, code) = refusal(fixture)
-  check "closure refused: " & fixture,
-    code != 0 and out1.contains("{.closure.}") and out1.contains(operand), out1
 
 echo "tcodegen: all checks passed"

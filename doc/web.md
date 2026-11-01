@@ -155,9 +155,10 @@ meaningful (`write`, `exit`), and trap loudly otherwise.
   and the cell is empty, so field access or method dispatch through the handle
   in Nim is not supported (go through `importjs`). `eunwrap` of a number that
   is no handle (a Nim address passed as userdata) yields `undefined`.
-  A `{.closure.}` proc cannot cross: as a parameter or result of an
-  `importjs` proc, or nested in a callback's own signature, it is refused by
-  name (jorogumo carries no environment). A `nimcall` proc, named or held in
+  A `{.closure.}` proc cannot cross (jorogumo carries no environment): the
+  front end (nimsem) refuses one as a parameter or result of an `importjs`
+  proc, or nested in a callback's own signature, with the parameter's source
+  location. The back end never sees one. A `nimcall` proc, named or held in
   a variable, is a callback.
   The wasm target refuses `importjs` by name.
 
