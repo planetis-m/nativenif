@@ -3386,7 +3386,7 @@ proc genCase(g: var WebGen; c: Cursor) =
         o.into:
           let rg = o
           skip o
-          if o.kind != TagLit or o.stmtKind notin {StmtsS, ScopeS}:
+          if o.kind != TagLit or o.stmtKind != StmtsS:
             err g, "case branch without a statement list"
           branches.add (rg, o)
           while o.hasMore: skip o

@@ -194,9 +194,7 @@ console.log(U8[$6]);
 #   built for the borrowed parameter (6 * 16); each of those two were built long
 #   by the store entry points (2 * 64), "zero" fits inline.
 # * tcase: switches u64 scrutinees: a range at the top of the u64 domain (+1), a
-#   label above 2^53 that its neighbour must not match (+2, +4). The branches are
-#   `(scope ...)`, as hexer emits the empty arms of a variant object's
-#   `=destroy`.
+#   label above 2^53 that its neighbour must not match (+2, +4).
 # * tcnil: fires a callback that takes a `cstring` with null (the nil cstring,
 #   +1) and with "abc" three times (borrowed bytes in the wrapper's frame,
 #   NUL-terminated, +2 each); a nil stored proc, a nil cstring and a splice
@@ -222,7 +220,7 @@ const fixtureRuns = [
   FixtureRun(file: "tcbstring", exitCode: 230,
              label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed"),
   FixtureRun(file: "tcase", exitCode: 7,
-             label: "case labels: u64 labels past 2^53, scope bodies"),
+             label: "case labels: u64 labels past 2^53"),
   FixtureRun(file: "tcnil", exitCode: 247,
              label: "null at the bridge: nil cstring, nil proc, callback cstring in the frame"),
   FixtureRun(file: "tgrowstore", exitCode: 5,
