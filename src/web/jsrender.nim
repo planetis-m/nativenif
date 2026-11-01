@@ -1121,8 +1121,9 @@ proc renderJs*(tree: var TokenBuf; m: WebModule; memBytes, stackBytes: int;
     result.add "let " & gs.join(", ") & ";\n"
   result.add dataInitJs(m)
   result.add genJs(tree)
-  # JS wrappers bridging Nim procs used as `importjs` callbacks; all-scalar
-  # procs need none and pass through as FTAB entries, so this is often empty.
+  # The makers of the JS wrappers bridging Nim procs used as `importjs`
+  # callbacks; all-scalar procs need none and pass through as FTAB entries, so
+  # this is often empty.
   for cb in m.callbacks:
     result.add cb
   result.add "FTAB[0] = () => { throw new Error(\"nil function pointer\"); };\n"

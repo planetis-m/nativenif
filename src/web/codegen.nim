@@ -128,9 +128,10 @@ type
     impWrite, impExit: SymId           ## the host floor and the flag registers,
     globErrv, globOvf: SymId           ## interned once: the tree names them often
     memcmpFn: SymId
-    callbacks: seq[string]             ## JS wrapper functions bridging a JS callback
-                                       ## call to a Nim proc whose args/result need
-                                       ## the handle/string bridge (emitted at the tail)
+    callbacks: seq[string]             ## one JS maker `__cbK(slot)` per bridged callback
+                                       ## site: the function that bridges a JS call to
+                                       ## the Nim proc `slot` (`cbWrap` memoizes it by
+                                       ## table slot; emitted at the tail)
 
   WebTarget* = enum
     wtJs                               ## JavaScript: `importjs` splices are legal
