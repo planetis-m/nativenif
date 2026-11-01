@@ -296,6 +296,7 @@ function nimStrToJs(s) {
   return new TextDecoder("utf-8").decode(U8.subarray(more + __STR_DATAOFF, more + __STR_DATAOFF + n));
 }
 function cstrToJs(p) {
+  if (p === 0) return null;     // a nil cstring is JS null, not ""
   let e = p; while (U8[e] !== 0) ++e;
   return new TextDecoder("utf-8").decode(U8.subarray(p, e));
 }
@@ -311,16 +312,19 @@ function cstrToJs(p) {
   # bytes go through `U8` read AFTER it. The caller owns the result.
   result.add """
 function jsToNimStr(dst, begin, end, v) {
-  const enc = new TextEncoder().encode(typeof v === "string" ? v : String(v));
+  // A Nim string has no nil: null and undefined are the empty string.
+  const enc = new TextEncoder().encode(typeof v === "string" ? v : v == null ? "" : String(v));
   DV.setUint32(dst, 0, true);
   const p = begin(dst, enc.length);
   U8.set(enc, p);
   end(dst);
   return dst;
 }
-// A cstring has no owner to free it, so it is never freed. It comes from the
-// bump heap (`osalloc`), so total cstring traffic is capped by SP_MIN.
+// A cstring a SPLICE returns has no owner to free it, so it is never freed. It
+// comes from the bump heap (`osalloc`), so total such traffic is capped by
+// SP_MIN. null and undefined are the nil cstring.
 function jsToCstr(v) {
+  if (v === null || v === undefined) return 0;
   const enc = new TextEncoder().encode(typeof v === "string" ? v : String(v));
   const n = enc.length;
   const p = osalloc(0, n + 1);
@@ -346,6 +350,23 @@ function strViewToJs(p, n) {
   return new TextDecoder("utf-8").decode(U8.subarray(p, p + n));
 }
 function memView(p, n) { return U8.subarray(p, p + n); }
+// A cstring a CALLBACK receives is borrowed for the call, so its bytes live in
+// the wrapper's own shadow-stack frame and go away with it: `jsCstrEnc` encodes
+// (null for the nil cstring), `jsCstrSize` is the frame space it needs (8-byte
+// units, NUL included), `jsCstrPut` stores it at `d` and answers the address.
+function jsCstrEnc(v) {
+  if (v === null || v === undefined) return null;
+  return new TextEncoder().encode(typeof v === "string" ? v : String(v));
+}
+function jsCstrSize(e) { return e === null ? 0 : (e.length + 8) & ~7; }
+function jsCstrPut(d, e) {
+  if (e === null) return 0;
+  U8.set(e, d); U8[d + e.length] = 0;
+  return d;
+}
+// A stored proc value handed to JS: the nil proc is null, not a function that
+// throws when called.
+function cbFn(i) { return i === 0 ? null : FTAB[i]; }
 function fillMem(d, v, n) { U8.fill(v, d, d + n); }
 """
   # The portable bit rows. wasm has i32.ctz/clz/popcount; JS has Math.clz32

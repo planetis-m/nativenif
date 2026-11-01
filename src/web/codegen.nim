@@ -2481,7 +2481,8 @@ proc stringStoreProc(g: var WebGen; strType: Cursor; isEnd: bool): SymId =
     err g, "`" & nm & "` is not available to bridge a string"
 
 proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
-                  destroy: SymId; strArgs: seq[string]; storeProcs: string): string =
+                  destroy: SymId; strArgs, cstrArgs: seq[string];
+                  storeProcs: string): string =
   ## `strRet` is the nil cursor unless the result is a `string`. `strArgs` holds
   ## the JS expression of each `string` argument, in the order the call takes
   ## them (its `jsToNimStr` slots are `f + 8*k`).
@@ -2494,12 +2495,23 @@ proc callbackBody(g: var WebGen; call, retBridge: string; strRet: Cursor;
   ## borrowed by the Nim proc, so the wrapper owns what `jsToNimStr` built for
   ## it. The result is converted, then everything the wrapper owns is
   ## destroyed (the callee handed over its result's ownership).
+  ## `cstrArgs` holds the JS expression of each `cstring` argument. The Nim
+  ## parameter is borrowed too, so its bytes follow the string slots in the same
+  ## frame (`c0`, `c1`, … name their addresses in `call`) and leave with it.
   let nSlots = strArgs.len + (if strRet.cursorIsNil: 0 else: 1)
   let rv = retBridge & "(" & call & ")"
-  if nSlots == 0:
+  if nSlots == 0 and cstrArgs.len == 0:
     return "return " & (if retBridge.len > 0: rv else: call) & ";"
   let n = nSlots * 8
-  result = "const f = frame(" & $n & "); U8.fill(0, f, f + " & $n & "); "
+  var need = $n
+  result = ""
+  for k, a in cstrArgs:
+    result.add "const e" & $k & " = jsCstrEnc(" & a & "); "
+    need.add " + jsCstrSize(e" & $k & ")"
+  result.add "const f = frame(" & need & "); U8.fill(0, f, f + " & $n & "); "
+  if cstrArgs.len > 0: result.add "let o = f + " & $n & "; "
+  for k in 0 ..< cstrArgs.len:
+    result.add "const c" & $k & " = jsCstrPut(o, e" & $k & "); o += jsCstrSize(e" & $k & "); "
   for k, a in strArgs:
     result.add "jsToNimStr(f + " & $(8 * k) & ", " & storeProcs & ", " & a & "); "
   let v = if retBridge.len > 0: rv else: call
@@ -2522,6 +2534,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   let (ptypes, ret) = proctypeSig(g, pt)
   var argExprs: seq[string] = @[]
   var strArgs: seq[string] = @[]           # JS value of each `string` argument
+  var cstrArgs: seq[string] = @[]          # JS value of each `cstring` argument
   var strTy = default(Cursor)              # the `string` type, once one is seen
   var bridged = false
   for i, pty in ptypes:
@@ -2552,8 +2565,9 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
       strTy = pty
       bridged = true
     of jbCstring:
-      # A cstring has no owner to free it: it stays allocated (see `jsToCstr`).
-      argExprs.add "jsToCstr(" & a & ")"
+      # Borrowed for the call, like a string: the wrapper's frame holds the bytes.
+      argExprs.add "c" & $cstrArgs.len
+      cstrArgs.add a
       bridged = true
     of jbCallback: err g, "a JS callback cannot take a Nim callback parameter (" & owner & ")"
   var retBridge = ""
@@ -2570,8 +2584,8 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   if not bridged:
     # Already JS-callable: hand over the function the table holds. Works for a
     # symbol or a stored fn-ptr — the index is whatever the operand evaluates to.
-    g.outp.openTree Index
-    g.outp.ident "FTAB"
+    g.outp.openTree Call
+    g.outp.ident "cbFn"
     genExpr(g, t)
     g.outp.closeTag
     return
@@ -2593,15 +2607,12 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   if sym == SymId(0):
     let w = "__cb" & $g.callbacks.len
     let body = callbackBody(g, "slot(" & argExprs.join(", ") & ")", retBridge,
-                            strRet, destroy, strArgs, storeProcs)
-    g.callbacks.add "function " & w & "(slot) { return (...a) => { " & body &
-                    " }; }\n"
+                            strRet, destroy, strArgs, cstrArgs, storeProcs)
+    g.callbacks.add "function " & w & "(i) { if (i === 0) return null; " &
+                    "const slot = FTAB[i]; return (...a) => { " & body & " }; }\n"
     g.outp.openTree Call
     g.outp.ident w
-    g.outp.openTree Index
-    g.outp.ident "FTAB"
     genExpr(g, t)
-    g.outp.closeTag
     g.outp.closeTag
     return
   var found = false
@@ -2613,7 +2624,7 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
   # declares; the extras are simply not forwarded.
   g.callbacks.add "function " & w & "(...a) { " &
-                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, storeProcs) & " }\n"
+                  callbackBody(g, call, retBridge, strRet, destroy, strArgs, cstrArgs, storeProcs) & " }\n"
   g.outp.ident w
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =

@@ -266,6 +266,23 @@ if nodeExe.len > 0:
   check "case labels: u64 labels past 2^53, scope bodies",
     csr.exitCode == 7, "exit " & $csr.exitCode & "\n" & csr.output
 
+# JS null and undefined at the bridge. `fixtures/tcnil.c.nif` fires a callback
+# that takes a `cstring` with null (the nil cstring, +1) and with "abc" three
+# times (borrowed bytes in the wrapper's frame, NUL-terminated, +2 each); a nil
+# stored proc, a nil cstring and a splice returning null reach JS as null
+# (+16, +32, +64).
+let nlPath = path.parentDir / "tcnil.c.nif"
+var nlBuf = parseFromFile(nlPath, sharedTags = tags)
+var nlMod = default(WebModule)
+var nlTree = generate(nlBuf, nlPath, tags, wtJs, nlMod)
+let nlJs = getTempDir() / "jorogumo_cnil_" & $getCurrentProcessId() & ".js"
+writeFile(nlJs, renderJs(nlTree, nlMod, 64 * 1024 * 1024, 64 * 1024))
+if nodeExe.len > 0:
+  let nlr = execCmdEx(nodeExe & " " & quoteShell(nlJs))
+  removeFile(nlJs)
+  check "null at the bridge: nil cstring, nil proc, callback cstring in the frame",
+    nlr.exitCode == 119, "exit " & $nlr.exitCode & "\n" & nlr.output
+
 # A plain aggregate has no JS spelling as a splice RESULT (an argument is its
 # address): refused, naming the proc, rather than read back as garbage.
 proc refusal(fixture: string): (string, int) =
