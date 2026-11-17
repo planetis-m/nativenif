@@ -2549,7 +2549,8 @@ type
     argExprs: seq[string]    ## the JS expression of each argument of the Nim call
     strArgs: seq[string]     ## the JS value of each `string` argument
     cstrArgs: seq[string]    ## the JS value of each `cstring` argument
-    strTy: Cursor            ## the `string` type, once a parameter is one
+    strTy: Cursor            ## the `string` type, once a parameter or result is one
+    strRet: bool             ## the result is a `string`
     retBridge: string        ## the JS conversion of the result, if any
     bridged: bool            ## some parameter or the result needs a conversion
     destroy: SymId           ## `string`'s destructor, when the wrapper owns strings
@@ -2600,6 +2601,8 @@ proc wrapResult(g: var WebGen; w: var CallbackWrap; ret: Cursor) =
   of jbString:
     w.retBridge = "nimStrToJs"
     w.bridged = true
+    w.strRet = true
+    w.strTy = ret
   of jbCstring:
     w.retBridge = "cstrToJs"
     w.bridged = true
@@ -2607,25 +2610,35 @@ proc wrapResult(g: var WebGen; w: var CallbackWrap; ret: Cursor) =
     err g, "a JS callback cannot return a Nim callback"
 
 proc wrapStringProcs(g: var WebGen; w: var CallbackWrap) =
-  ## Resolve the runtime procs a wrapper that owns strings calls.
+  ## Resolve the runtime procs a wrapper that owns strings calls, and put the
+  ## hidden result slot of a `string` result first among the arguments (it
+  ## lies after the argument slots in the frame).
   if not w.strTy.cursorIsNil:
     w.storeProcs = poolSym(g.irPool, irName(g, stringStoreProc(g, w.strTy, false))) & ", " &
                    poolSym(g.irPool, irName(g, stringStoreProc(g, w.strTy, true)))
     w.destroy = stringDestroy(g, w.strTy)
+  if w.strRet:
+    var args = @["f + " & $(8 * w.strArgs.len)]
+    for a in w.argExprs: args.add a
+    w.argExprs = args
 
 proc wrapBody(g: var WebGen; w: CallbackWrap; callee: string): string =
   ## The body of the JS function that calls the Nim proc `callee`. The wrapper
   ## owns a shadow stack frame of its own when it owns anything (a `string` or
-  ## `cstring` argument), because the JS host may call after the Nim caller's
-  ## frame is gone (a timer) or while another is live (reentrancy); otherwise
-  ## it just calls. The frame holds one 8-byte slot per `string` argument: the
-  ## Nim parameter is borrowed, so the wrapper owns what `jsToNimStr` built for
-  ## it (slot `f + 8*k`) and destroys it after the call. A `cstring` parameter
-  ## is borrowed too: its bytes follow the string slots in the same frame (`c0`,
-  ## `c1`, … name their addresses in the call) and leave with it.
+  ## `cstring` argument or a `string` result), because the JS host may call
+  ## after the Nim caller's frame is gone (a timer) or while another is live
+  ## (reentrancy); otherwise it just calls. The frame holds one 8-byte slot per
+  ## `string` argument and, after them, the hidden result slot: a `string`
+  ## result comes back through the hidden first parameter, so the call already
+  ## carries it. A `string` parameter is borrowed by the Nim proc, so the
+  ## wrapper owns what `jsToNimStr` built for it (slot `f + 8*k`). A `cstring`
+  ## parameter is borrowed too: its bytes follow the string slots in the same
+  ## frame (`c0`, `c1`, … name their addresses in the call) and leave with it.
+  ## The result is converted, then everything the wrapper owns is destroyed
+  ## (the callee handed over its result's ownership).
   let call = callee & "(" & w.argExprs.join(", ") & ")"
   let v = if w.retBridge.len > 0: w.retBridge & "(" & call & ")" else: call
-  let nSlots = w.strArgs.len
+  let nSlots = w.strArgs.len + (if w.strRet: 1 else: 0)
   if nSlots == 0 and w.cstrArgs.len == 0:
     return "return " & v & ";"
   let n = nSlots * 8

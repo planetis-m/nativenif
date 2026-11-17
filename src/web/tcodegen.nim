@@ -183,6 +183,13 @@ console.log(U8[$6]);
 #   reads both right (1 + 2 each); the wrapper owns the string it built for the
 #   borrowed parameter and destroys it after each call (3 * 16), each built by
 #   one begin/end pair (3 * 64). The cstring's bytes sit in the wrapper's frame.
+# * tcbstring: a callback that returns a `string` (an aggregate, through the
+#   hidden first parameter), fired with a parameter and with none, each as a
+#   named proc and as a stored fn-ptr. The host must see "alphabet" and "zero"
+#   (1 + 1 + 2 + 2). Each of the four returned strings is destroyed once, after
+#   its conversion, and so is each of the two "alphabet" arguments the wrapper
+#   built for the borrowed parameter (6 * 16); each of those two were built long
+#   by the store entry points (2 * 64), "zero" fits inline.
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -197,7 +204,9 @@ const fixtureRuns = [
   FixtureRun(file: "toomstr", exitCode: 6,
              label: "a failed string allocation: no write through nil, no end"),
   FixtureRun(file: "tcbargs", exitCode: 249,
-             label: "callback string and cstring arguments: owned by the wrapper, freed")]
+             label: "callback string and cstring arguments: owned by the wrapper, freed"),
+  FixtureRun(file: "tcbstring", exitCode: 230,
+             label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.
