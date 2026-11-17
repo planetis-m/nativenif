@@ -218,7 +218,11 @@ console.log(U8[$6]);
 #   4 from main). Without the restore it dies of "stack overflow".
 # * thandle: one JS value has one handle: `globalThis` twice is the same
 #   handle (+1), two fresh objects are two (+2), and a handle that goes through
-#   an `importjs` identity splice comes back equal (+4).
+#   an `importjs` identity splice comes back equal (+4). A handle is the
+#   address of a 16-byte cell (+16) whose count every crossing STORES as 1<<30,
+#   even after the program clobbered it (+8), so ARC on a `ref` handle never
+#   frees it. The first handle ever made (its cell page grows linear memory)
+#   is stored into a global, and the store must not be lost (+32).
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -246,8 +250,8 @@ const fixtureRuns = [
              label: "Nim nil into JS: null for a nil proc and a nil cstring"),
   FixtureRun(file: "tcbthrow", exitCode: 5,
              label: "a callback that throws into a catching host leaves SP restored"),
-  FixtureRun(file: "thandle", exitCode: 7,
-             label: "handle identity: one JS value, one handle")]
+  FixtureRun(file: "thandle", exitCode: 63,
+             label: "handles: one JS value, one cell; the cell count is restored")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.

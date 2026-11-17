@@ -98,21 +98,64 @@ let I8 = new Int8Array(JMEM), U8 = new Uint8Array(JMEM),
     F32 = new Float32Array(JMEM), F64 = new Float64Array(JMEM),
     BI64 = new BigInt64Array(JMEM), BU64 = new BigUint64Array(JMEM),
     DV = new DataView(JMEM);  // width-2+ heap access: no alignment trap, no vanishing store
-const EXT = [];  // extern value table: handle -> real JS value (§6)
 const FTAB = []; // function table: slot -> JS function; 0 is the null pointer
-let JSP = [null];  // the same table, grown by ewrap
-const JMAP = new Map();  // value -> handle: one JS value has one handle, so `==` is identity
+// HANDLE TABLE (§6). A handle is the address of a CELL in linear memory: 16
+// bytes at a 16-byte boundary, an interned, immortal stand-in for a JS value.
+// A handle typed `ref object` reaches ARC, which treats it as an address and
+// keeps the refcount at offset 0 of the target (ORC/YRC: a `(rc, rootIdx)`
+// header, 16 bytes, which the cell has room for). One JS value has one handle
+// for the life of the program, so `==` on handles is JS identity.
+// Every crossing STORES (not increments) 1<<30 into the cell's count. A `ptr`
+// handle is never touched by ARC, so it cannot overflow; a `ref` handle's
+// matching destroy only decrements from a huge value, and "last reference" is
+// a count below 0 (ARC) or with no bits above the flag bits (ORC), so it needs
+// about a billion net decrements with no crossing in between. The cell is
+// therefore never freed, and `deallocFixed` never sees it.
+// Cells are NOT osalloc memory (that heap is capped by SP_MIN and would die of
+// `out of memory` on cells alone): they come from pages of their own, obtained
+// with `memoryGrow` in chunks that double up to JCELL_MAXPAGES, which also keeps
+// the copy memoryGrow does amortized (each grow copies all of linear memory,
+// so fewer, larger chunks are what keeps interning linear). The chunk's values
+// live in a parallel array, so handle -> value is a chunk lookup and an index.
+// value -> handle is one Map, which V8 caps at 2^24 entries: interning more
+// distinct values is a RangeError.
+const JCELL_RC = 1 << 30, JCELL_MAXENTRIES = 1 << 24, JCELL_MAXPAGES = 256;
+const JCH = [];  // chunks: {lo, used, cap, vals}; address range [lo, lo + cap * 16)
+const JMAP = new Map();  // value -> handle
+let JCELL_PAGES = 16;
+function __newCell(v) {
+  let c = JCH.length ? JCH[JCH.length - 1] : null;
+  if (c === null || c.used === c.cap) {
+    const old = memoryGrow(JCELL_PAGES);
+    if (old < 0 || (old + JCELL_PAGES) * 65536 > 2147483647) throw new Error("out of memory");
+    c = {lo: old * 65536, used: 0, cap: JCELL_PAGES * 4096, vals: []};
+    JCH.push(c);
+    if (JCELL_PAGES < JCELL_MAXPAGES) JCELL_PAGES *= 2;
+  }
+  c.vals.push(v);
+  return c.lo + 16 * c.used++;
+}
 function ewrap(v) {
   if (typeof v === "number" || typeof v === "bigint") return v;
   if (typeof v === "boolean") return v ? 1 : 0;
   if (v === null || v === undefined) return 0;
   let h = JMAP.get(v);
-  if (h === undefined) { h = JSP.length; JSP.push(v); JMAP.set(v, h); }
+  if (h === undefined) {
+    if (JMAP.size >= JCELL_MAXENTRIES) throw new RangeError("too many distinct JS values (2^24)");
+    h = __newCell(v);
+    JMAP.set(v, h);
+  }
+  I32[h >> 2] = JCELL_RC;
   return h;
 }
 function eunwrap(h) {
   if (typeof h === "bigint") return Number(h);
-  return h < 1 ? null : JSP[h];
+  if (h < 1) return null;
+  for (let i = JCH.length - 1; i >= 0; --i) {
+    const c = JCH[i], d = h - c.lo;
+    if (d >= 0 && d < c.used * 16) return (d & 15) === 0 ? c.vals[d >> 4] : undefined;
+  }
+  return undefined;  // a raw number that is no handle (a Nim address as userdata)
 }
 const __internExt = ewrap; // splice-facing alias: intern a host value as a handle
 """
@@ -514,7 +557,8 @@ type
     indent: int      ## nesting level of the block being rendered (two spaces each)
     growSites: int   ## how many nodes that can grow linear memory (and so
                      ## rebind the views) have been printed so far: a call of
-                     ## any kind, a splice or the grow node itself. A load or store compares it before and after
+                     ## any kind, a splice, a handle wrap or the grow node
+                     ## itself. A load or store compares it before and after
                      ## its operands, which is one walk however deep the tree,
                      ## where asking each operand's subtree would rescan it
                      ## under every enclosing load.
@@ -787,7 +831,9 @@ proc exprText(c: Cursor; s: var RenderState): string =
     if sc == 1: result = "(" & viewNames[w] & "[" & at & "] = " & val & ")"
     else: result = "(DV." & dvSet[w] & "(" & at & ", " & val & ", true))"
   # ── extern bridge
-  of EWrap: result = "ewrap(" & exprText(c.firstChild, s) & ")"
+  of EWrap:
+    inc s.growSites                              # a new cell may grow memory
+    result = "ewrap(" & exprText(c.firstChild, s) & ")"
   of EUnwrap: result = "eunwrap(" & exprText(c.firstChild, s) & ")"
   of EStrLit: result = "ewrap(" & escapeJsString(strVal(c.firstChild)) & ")"
   of Cvt:
@@ -850,7 +896,7 @@ proc exprText(c: Cursor; s: var RenderState): string =
       of wI32, wU32: "bitsf32(" & v & ")"
       else: raiseAssert "jsrender: cannot reinterpret " & $fromW & " as " & $toW
   of Raw:
-    # (raw NAME TPL ARG*) — NAME is also the `EXT` entry it lowers to, so
+    # (raw NAME TPL ARG*) — NAME is also what it lowers to, so
     # splicing here yields exactly what codegen would have emitted inline.
     inc s.growSites
     var it = c.firstChild

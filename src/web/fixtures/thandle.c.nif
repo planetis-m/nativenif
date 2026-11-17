@@ -6,6 +6,8 @@
  (type :H.0.thandle .
   (ptr Obj.0.thandle))
  (gvar :acc.0 . (i 32) 0)
+ (gvar :first.0 . H.0.thandle
+  (nil))
  (proc :getG.0.
   (params)
   H.0.thandle
@@ -31,6 +33,17 @@
   (pragmas
    (exportc "main"))
   (stmts
+   (asgn first.0
+    (call mk.0.))
+   (if
+    (elif
+     (not
+      (eq first.0
+       (nil)))
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 32)))))
    (var :g.0 . H.0.thandle (call getG.0.))
    (if
     (elif
@@ -55,4 +68,28 @@
       (asgn acc.0
        (add
         (i 32) acc.0 4)))))
+   (asgn
+    (dot
+     (deref g.0) x.0 0) 5)
+   (discard (call getG.0.))
+   (if
+    (elif
+     (eq
+      (dot
+       (deref g.0) x.0 0) 1073741824)
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 8)))))
+   (if
+    (elif
+     (eq
+      (bitand
+       (i 32)
+       (cast
+        (i 32) g.0) 15) 0)
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 16)))))
    (ret acc.0))))
