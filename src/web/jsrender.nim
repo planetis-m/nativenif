@@ -273,7 +273,8 @@ function cstrToJs(p) {
   # the bytes go through `U8` read AFTER it. The caller owns the result.
   result.add """
 function jsToNimStr(dst, begin, end, v) {
-  const enc = jsCstrEnc(v);
+  // A Nim string has no nil: null and undefined are the empty string.
+  const enc = jsCstrEnc(v) || new Uint8Array(0);
   DV.setUint32(dst, 0, true);
   const p = begin(dst, enc.length);
   if (p === 0) return dst;  // out of memory: `dst` is the sticky OOM string, nothing to fill
@@ -283,10 +284,10 @@ function jsToNimStr(dst, begin, end, v) {
 }
 // A cstring a SPLICE returns has no owner to free it, so it is never freed. It
 // comes from the bump heap (`osalloc`), so total such traffic is capped by
-// SP_MIN.
+// SP_MIN. null and undefined are the nil cstring.
 function jsToCstr(v) {
   const e = jsCstrEnc(v);
-  return jsCstrPut(osalloc(0, e.length + 1), e);
+  return e === null ? 0 : jsCstrPut(osalloc(0, e.length + 1), e);
 }
 """
   # Length-based bridges, for the C shapes that are neither a Nim string nor
@@ -308,14 +309,16 @@ function strViewToJs(p, n) {
 }
 function memView(p, n) { return U8.subarray(p, p + n); }
 // A cstring a CALLBACK receives is borrowed for the call, so its bytes live in
-// the wrapper's own shadow-stack frame and go away with it: `jsCstrEnc` encodes,
-// `jsCstrSize` is the frame space it needs (8-byte units, NUL included),
-// `jsCstrPut` stores it at `d` and answers the address.
+// the wrapper's own shadow-stack frame and go away with it: `jsCstrEnc` encodes
+// (null for the nil cstring), `jsCstrSize` is the frame space it needs (8-byte
+// units, NUL included), `jsCstrPut` stores it at `d` and answers the address.
 function jsCstrEnc(v) {
+  if (v === null || v === undefined) return null;
   return new TextEncoder().encode(typeof v === "string" ? v : String(v));
 }
-function jsCstrSize(e) { return (e.length + 8) & ~7; }
+function jsCstrSize(e) { return e === null ? 0 : (e.length + 8) & ~7; }
 function jsCstrPut(d, e) {
+  if (e === null) return 0;
   U8.set(e, d); U8[d + e.length] = 0;
   return d;
 }

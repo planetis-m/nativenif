@@ -190,6 +190,10 @@ console.log(U8[$6]);
 #   its conversion, and so is each of the two "alphabet" arguments the wrapper
 #   built for the borrowed parameter (6 * 16); each of those two were built long
 #   by the store entry points (2 * 64), "zero" fits inline.
+# * tnull: JS `null` and `undefined` are the empty string (a string splice
+#   returning null, +1) and the nil cstring (a cstring splice returning
+#   undefined, +2; a callback's cstring argument fired with null, +4), not the
+#   text "null".
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -206,7 +210,9 @@ const fixtureRuns = [
   FixtureRun(file: "tcbargs", exitCode: 249,
              label: "callback string and cstring arguments: owned by the wrapper, freed"),
   FixtureRun(file: "tcbstring", exitCode: 230,
-             label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed")]
+             label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed"),
+  FixtureRun(file: "tnull", exitCode: 7,
+             label: "JS null into Nim: the empty string, the nil cstring")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.

@@ -1,0 +1,155 @@
+(.nif27)
+(stmts@,1,tnull.nim
+ (type :string.0.tnull .
+  (object .
+   (fld :bytes.0 .
+    (u 32))
+   (fld :more.0 .
+    (ptr
+     (u 8)))))
+ (type :Cb.0.tnull .
+  (proctype .
+   (params
+    (param :s.0 . (aptr (c 8)))) . .))
+ (gvar :destroyed.0 . (i 32) 0)
+ (gvar :bump.0 . (i 32) 1048576)
+ (gvar :allocs.0 . (i 32) 0)
+ (gvar :begins.0 . (i 32) 0)
+ (gvar :ends.0 . (i 32) 0)
+ (proc :nimStrBeginStore.0.
+  (params
+   (param :s.0 . (ptr string.0.tnull))
+   (param :n.0 . (i 32)))
+  (ptr
+   (u 8))
+  (pragmas
+   (exportc "nimStrBeginStore"))
+  (stmts
+   (asgn begins.0
+    (add
+     (i 32) begins.0 1))
+   (if
+    (elif
+     (le n.0 6)
+     (stmts
+      (asgn
+       (dot
+        (deref s.0) bytes.0 0) n.0)
+      (ret
+       (cast
+        (ptr
+         (u 8))
+        (add
+         (i 32)
+         (cast
+          (i 32) s.0) 1)))))
+    (else
+     (stmts
+      (var :p.0 . (i 32) bump.0)
+      (asgn bump.0
+       (add
+        (i 32) bump.0
+        (add
+         (i 32) n.0 12)))
+      (asgn allocs.0
+       (add
+        (i 32) allocs.0 1))
+      (asgn
+       (deref
+        (cast
+         (ptr
+          (i 32)) p.0)) n.0)
+      (asgn
+       (dot
+        (deref s.0) bytes.0 0) 255)
+      (asgn
+       (dot
+        (deref s.0) more.0 0)
+       (cast
+        (ptr
+         (u 8)) p.0))
+      (ret
+       (cast
+        (ptr
+         (u 8))
+        (add
+         (i 32) p.0 12))))))))
+ (proc :nimStrEndStore.0.
+  (params
+   (param :s.0 . (ptr string.0.tnull)))
+  .
+  (pragmas
+   (exportc "nimStrEndStore"))
+  (stmts
+   (asgn ends.0
+    (add
+     (i 32) ends.0 1))))
+ (gvar :acc.0 . (i 32) 0)
+ (proc :exit.0
+  (params
+   (param :code.0 . (i 32)))
+  .
+  (pragmas
+   (importc "exit"))
+  (stmts .))
+ (proc :nullStr.0.
+  (params)
+  string.0.tnull
+  (pragmas
+   (importjs "null"))
+  (stmts .))
+ (proc :undefCs.0.
+  (params)
+  (aptr (c 8))
+  (pragmas
+   (importjs "undefined"))
+  (stmts .))
+ (proc :fireNull.0.
+  (params
+   (param :cb.0 . Cb.0.tnull))
+  .
+  (pragmas
+   (importjs "#(null)"))
+  (stmts .))
+ (proc :probe.0.
+  (params
+   (param :s.0 . (aptr (c 8))))
+  .
+  .
+  (stmts
+   (if
+    (elif
+     (eq s.0
+      (nil))
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 4)))))))
+ (proc :main.0.
+  (params)
+  (i 32)
+  (pragmas
+   (exportc "main"))
+  (stmts
+   (var :s.0 . string.0.tnull
+    (call nullStr.0.))
+   (if
+    (elif
+     (eq
+      (dot s.0 bytes.0 0) 0)
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 1)))))
+   (if
+    (elif
+     (eq
+      (call undefCs.0.)
+      (nil))
+     (stmts
+      (asgn acc.0
+       (add
+        (i 32) acc.0 2)))))
+   (call fireNull.0. probe.0.)
+   (call exit.0 acc.0)
+   (ret 0))))
