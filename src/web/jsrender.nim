@@ -257,6 +257,7 @@ function nimStrToJs(s) {
   return new TextDecoder("utf-8").decode(U8.subarray(more + __STR_DATAOFF, more + __STR_DATAOFF + n));
 }
 function cstrToJs(p) {
+  if (p === 0) return null;     // a nil cstring is JS null, not ""
   let e = p; while (U8[e] !== 0) ++e;
   return new TextDecoder("utf-8").decode(U8.subarray(p, e));
 }
@@ -322,12 +323,13 @@ function jsCstrPut(d, e) {
   U8.set(e, d); U8[d + e.length] = 0;
   return d;
 }
-// A Nim proc handed to JS as a callback through a wrapper: ONE JS function per
-// table slot, however many sites hand it over (addEventListener, then
-// removeEventListener). `mk` is a site's maker, called on the Nim proc
-// `FTAB[i]` the first time slot `i` crosses.
-const __cbMemo = new Map();
+// A Nim proc handed to JS as a callback: ONE JS function per table slot, however
+// many sites hand it over (addEventListener, then removeEventListener). `mk`
+// makes it from the Nim proc `FTAB[i]`: a site's own wrapper, or `__cbSelf` for
+// a proc that needs no bridging. The nil proc is null, not a function that throws.
+const __cbMemo = new Map(), __cbSelf = (f) => f;
 function cbWrap(i, mk) {
+  if (i === 0) return null;
   let f = __cbMemo.get(i);
   if (f === undefined) { f = mk(FTAB[i]); __cbMemo.set(i, f); }
   return f;

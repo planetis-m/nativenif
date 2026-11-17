@@ -202,6 +202,8 @@ console.log(U8[$6]);
 # * tcbident: a Nim proc that needs a wrapper is one JS function however it
 #   crosses: named twice (+1), as a stored value and by name (+2), as a stored
 #   value twice (+4); two different procs are two functions (+8).
+# * tnil: Nim nil into JS is null: a nil proc that needs no wrapper (+1), one
+#   that does (+2), and a nil cstring (+4).
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -224,7 +226,9 @@ const fixtureRuns = [
   FixtureRun(file: "tcallback", exitCode: 54,
              label: "handle callback arguments: null, undefined, object, function, number"),
   FixtureRun(file: "tcbident", exitCode: 15,
-             label: "callback identity: one JS function per Nim proc")]
+             label: "callback identity: one JS function per Nim proc"),
+  FixtureRun(file: "tnil", exitCode: 7,
+             label: "Nim nil into JS: null for a nil proc and a nil cstring")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.
