@@ -225,6 +225,16 @@ proc jsBridgeKind(g: var WebGen; t: Cursor): JsBridgeKind =
   elif isPtrType(g, t): jbHandle
   else: jbNone
 
+proc refuseStringPointer(g: var WebGen; t: Cursor; what: string) =
+  ## A `var`/`lent` string or cstring is a pointer to the Nim value, which the
+  ## bridge would take for a JS handle and unwrap to `undefined`. The bridge
+  ## converts a string BY VALUE, so a pointer to one is refused, naming `what`.
+  if isCstringType(g, t) or not isPtrType(g, t): return
+  let inner = innerType(g.prog, resolveType(g.prog, t))
+  if isNimStringType(g, inner) or isCstringType(g, inner):
+    err g, what & " is a pointer to a string (`var` or `lent`); an importjs " &
+           "boundary converts a string by value"
+
 proc isVoidType(t: Cursor): bool =
   t.kind == DotToken or (t.kind == TagLit and t.typeKind == VoidT)
 
@@ -2536,6 +2546,7 @@ type
   CallbackWrap = object
     ## What a callback wrapper needs, filled by `wrapParam`/`wrapResult`/
     ## `wrapStringProcs` and read by `wrapBody`.
+    owner: string            ## the operand, named in a refusal
     argExprs: seq[string]    ## the JS expression of each argument of the Nim call
     strArgs: seq[string]     ## the JS value of each `string` argument
     cstrArgs: seq[string]    ## the JS value of each `cstring` argument
@@ -2549,6 +2560,7 @@ type
 proc wrapParam(g: var WebGen; w: var CallbackWrap; pty: Cursor; i: int) =
   ## Classify parameter `i` of the callback's proctype and add its argument.
   let a = "a[" & $i & "]"
+  refuseStringPointer(g, pty, "parameter " & $i & " of a callback (" & w.owner & ")")
   case jsBridgeKind(g, pty)
   of jbNone:
     # An aggregate (a `WGPUStringView`, say) travels as the address of a
@@ -2577,14 +2589,17 @@ proc wrapParam(g: var WebGen; w: var CallbackWrap; pty: Cursor; i: int) =
     w.cstrArgs.add a
     w.bridged = true
   of jbCallback:
-    err g, "a JS callback cannot take a Nim callback parameter"
+    err g, "a JS callback cannot take a Nim callback parameter (" & w.owner & ")"
 
 proc wrapResult(g: var WebGen; w: var CallbackWrap; ret: Cursor) =
   ## Classify the callback's result type `ret` (nil or a DotToken for none).
+  let hasRet = not ret.cursorIsNil and ret.kind != DotToken
+  if hasRet:
+    refuseStringPointer(g, ret, "the result of a callback (" & w.owner & ")")
   case jsBridgeKind(g, ret)
   of jbNone:
-    if not ret.cursorIsNil and ret.kind != DotToken and isAggType(g, ret):
-      err g, "a JS callback cannot return an aggregate struct"
+    if hasRet and isAggType(g, ret):
+      err g, "a JS callback cannot return an aggregate struct (" & w.owner & ")"
   of jbHandle:
     w.retBridge = "eunwrap"
     w.bridged = true
@@ -2597,7 +2612,7 @@ proc wrapResult(g: var WebGen; w: var CallbackWrap; ret: Cursor) =
     w.retBridge = "cstrToJs"
     w.bridged = true
   of jbCallback:
-    err g, "a JS callback cannot return a Nim callback"
+    err g, "a JS callback cannot return a Nim callback (" & w.owner & ")"
 
 proc wrapStringProcs(g: var WebGen; w: var CallbackWrap) =
   ## Resolve the runtime procs a wrapper that owns strings calls, and put the
@@ -2656,7 +2671,7 @@ proc callbackMaker(name, body: string): string =
   ## once per table slot.
   "function " & name & "(slot) { return (...a) => { " & body & " }; }\n"
 
-proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor) =
+proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor; owner: string) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
   ## setTimeout, a DOM listener). The JS host calls it with plain JS values; we
   ## bridge each argument and the result by kind and invoke the Nim proc, which
@@ -2664,8 +2679,9 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor) =
   ## A proc whose signature is all-scalar with a void/scalar result is already
   ## JS-callable, so it passes through as the table entry `FTAB[i]`; anything
   ## needing a handle/string bridge gets a generated wrapper around it.
+  ## `owner` names the operand for a refusal.
   let (ptypes, ret) = proctypeSig(g, pt)
-  var w = CallbackWrap(argExprs: @[], strArgs: @[], cstrArgs: @[],
+  var w = CallbackWrap(owner: owner, argExprs: @[], strArgs: @[], cstrArgs: @[],
                        strTy: default(Cursor), retBridge: "", destroy: SymId(0),
                        storeProcs: "")
   for i, pty in ptypes: wrapParam(g, w, pty, i)
@@ -2711,6 +2727,7 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
   ## not its handle. A `Call` never unwraps — there a pointer is a real address.
   var p = decl
   p.into:
+    let callee = g.spell(p.symId)            # the proc, named in a refusal
     inc p                                    # name
     p.into:                                  # params
       while p.hasMore:
@@ -2719,11 +2736,15 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
         var agg = false
         var bk = jbNone
         var ptq = default(Cursor)            # the proctype of a callback parameter
+        var pname = ""
         q.into:
+          pname = g.spell(q.symId)
           inc q                              # name
           skip q                             # pragmas
           agg = isAggType(g, q)
           if splice:
+            refuseStringPointer(g, q, "parameter `" & pname & "` of `" &
+                                      callee & "`")
             bk = jsBridgeKind(g, q)
             if bk == jbCallback:
               # The declared type may be a named alias or a `ptr proctype`;
@@ -2754,7 +2775,8 @@ proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
             g.genExprCoerced(t, w)
             g.outp.closeTag
           of jbCallback:                     # Nim proc -> a JS callable
-            callbackBridge(g, t, ptq)
+            callbackBridge(g, t, ptq, "callback parameter `" & pname & "` of `" &
+                                      callee & "`")
           of jbNone:
             let (csz, _) = aggArgDestSize(g, t)
             if csz > 0: genAggArg(g, t, csz)
@@ -2907,6 +2929,8 @@ proc genCallFrom(g: var WebGen; t: var Cursor; wantValue: bool) =
       # real JS value the splice produced, so it wraps back into the host
       # table (`ewrap`); scalars pass through as the splice's own number.
       let rt = calleeResultType(g, target)
+      if not rt.cursorIsNil:
+        refuseStringPointer(g, rt, "the result of `" & g.spell(nm) & "`")
       let rbk = if not rt.cursorIsNil: jsBridgeKind(g, rt) else: jbNone
       case rbk
       of jbString:

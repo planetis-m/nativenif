@@ -259,7 +259,8 @@ if nodeExe.len > 0:
 
 # `refuse` quits, so a refusal is read off a process (`--generate`). A plain
 # aggregate has no JS spelling as a splice RESULT (an argument is its address):
-# refused, naming the proc, rather than read back as garbage.
+# refused, naming the proc, rather than read back as garbage. The same for a
+# `var`/`lent` string, which is a pointer to the Nim value.
 type Refusal = object
   fixture, label: string
   needles: seq[string]     ## what the message must contain
@@ -270,7 +271,9 @@ proc refusal(fixture: string): (string, int) =
             options = {poStdErrToStdOut})
 
 for r in [Refusal(fixture: "tsplice_aggret", label: "aggregate splice result refused by name",
-                  needles: @["importjs proc `mk.0", "aggregate"])]:
+                  needles: @["importjs proc `mk.0", "aggregate"]),
+          Refusal(fixture: "tsplice_strptr", label: "var string splice parameter refused by name",
+                  needles: @["parameter `s.0` of `show.0", "pointer to a string"])]:
   let (output, code) = refusal(r.fixture)
   var named = true
   for needle in r.needles:
