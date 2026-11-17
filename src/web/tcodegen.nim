@@ -160,12 +160,29 @@ console.log(U8[$6]);
 #   splice reserves no sret temporary; a reservation nobody took shifted every
 #   later temporary (a 12-byte constructor met an 8-byte slot). It splices a
 #   string, builds a pair of strings and passes a constructor to a call:
-#   3 + 3 + (5 + 7 + 11).
+#   3 + 3 + (5 + 7 + 11). The fixture stubs the string store entry points that
+#   a string splice calls.
 # * tgrowstore: a store whose value is a call that grows linear memory must land
 #   in the NEW buffer, not the one JS read `DV` from before the call (5), and a
 #   load through a pointer such a call returns must read the new buffer (7).
 #   A lost store leaves the global 0; a stale load reads the 0 the old buffer
 #   still holds.
+# * tstrbridge: a string an `importjs` proc returns is an ordinary owned Nim
+#   string, built in a frame temporary of the caller. It splices strings of 0, 3,
+#   6 (the inline payload limit), 7 and 10 chars: only a string past the payload
+#   allocates. The fixture stubs the runtime's `nimStrBeginStore` and
+#   `nimStrEndStore` (the bridge writes no layout of its own, it only calls them
+#   and copies the bytes), and each string is checked by what it reads as; two
+#   live results of one expression do not share a slot; every begin has its end.
+# * toomstr: the runtime's `nimStrBeginStore` returns nil when the allocation
+#   failed and leaves the string as the OOM cookie. The bridge must then write no
+#   bytes (not to address 0) and not call `end`: the exit code is the cookie's
+#   low word alone (6 = 1296125702 mod 256, plus nothing from `ends` or from a
+#   corrupted word 0).
+# * tcbargs: a callback taking a `string` and a `cstring`, fired three times. It
+#   reads both right (1 + 2 each); the wrapper owns the string it built for the
+#   borrowed parameter and destroys it after each call (3 * 16), each built by
+#   one begin/end pair (3 * 64). The cstring's bytes sit in the wrapper's frame.
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -174,7 +191,13 @@ const fixtureRuns = [
   FixtureRun(file: "tsplice", exitCode: 29,
              label: "splice then constructors: the plan matches the lowering"),
   FixtureRun(file: "tgrowstore", exitCode: 12,
-             label: "a load or store whose operand grows memory uses the live buffer")]
+             label: "a load or store whose operand grows memory uses the live buffer"),
+  FixtureRun(file: "tstrbridge", exitCode: 63,
+             label: "bridged strings: inline up to the payload, Nim-built string"),
+  FixtureRun(file: "toomstr", exitCode: 6,
+             label: "a failed string allocation: no write through nil, no end"),
+  FixtureRun(file: "tcbargs", exitCode: 249,
+             label: "callback string and cstring arguments: owned by the wrapper, freed")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.
