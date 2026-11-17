@@ -194,6 +194,11 @@ console.log(U8[$6]);
 #   returning null, +1) and the nil cstring (a cstring splice returning
 #   undefined, +2; a callback's cstring argument fired with null, +4), not the
 #   text "null".
+# * tcallback: fires a named proc and a stored fn-ptr with `null`, `undefined`,
+#   an object, a function and a number: the first two must arrive as nil (+1
+#   each), the object and the function as handles (+2 each), the number
+#   untouched (+16). A JS function handed to a callback that returns it comes
+#   back as the same function (+32).
 type FixtureRun = object
   file, label: string
   exitCode: int
@@ -212,7 +217,9 @@ const fixtureRuns = [
   FixtureRun(file: "tcbstring", exitCode: 230,
              label: "string-result callbacks: arguments, no parameters, fn-ptr; result destroyed"),
   FixtureRun(file: "tnull", exitCode: 7,
-             label: "JS null into Nim: the empty string, the nil cstring")]
+             label: "JS null into Nim: the empty string, the nil cstring"),
+  FixtureRun(file: "tcallback", exitCode: 54,
+             label: "handle callback arguments: null, undefined, object, function, number")]
 
 proc runFixture(dir, name, nodeExe: string): (string, int) =
   ## Generate `name`.c.nif in `dir`, render it as JS and run it under node.
