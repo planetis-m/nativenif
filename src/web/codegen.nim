@@ -128,9 +128,10 @@ type
     impWrite, impExit: SymId           ## the host floor and the flag registers,
     globErrv, globOvf: SymId           ## interned once: the tree names them often
     memcmpFn: SymId
-    callbacks: seq[string]             ## JS wrapper functions bridging a JS callback
-                                       ## call to a Nim proc whose args/result need
-                                       ## the handle/string bridge (emitted at the tail)
+    callbacks: seq[string]             ## one JS maker `__cbK(slot)` per bridged callback
+                                       ## site: the function that bridges a JS call to
+                                       ## the Nim proc `slot` (`cbWrap` memoizes it by
+                                       ## table slot; emitted at the tail)
 
   WebTarget* = enum
     wtJs                               ## JavaScript: `importjs` splices are legal
@@ -2501,17 +2502,6 @@ proc proctypeSig(g: var WebGen; pt: Cursor): (seq[Cursor], Cursor) =
   skip p                                     # past PARAMS (a tag or a DotToken)
   (params, p)                                # p is now the RET child
 
-proc operandProcSym(g: var WebGen; t: Cursor): SymId =
-  ## The proc symbol a callback operand names: a bare proc Symbol, or one under
-  ## `(addr …)`/`(haddr …)`. Empty when it is not a direct proc reference — a
-  ## stored fn-ptr or a closure literal — which a bridged wrapper cannot target.
-  result = default(SymId)
-  var c = t
-  while c.kind == TagLit and c.exprKind in {AddrC, HaddrC}:
-    inc c
-  if c.kind == Symbol and lookupSym(typeCtx(g), c.symId).cat == scProc:
-    result = symId(c)
-
 proc reachableProc(g: var WebGen; sym: SymId): SymId =
   ## `sym` made reachable, or `SymId(0)` when no module declares it.
   result = SymId(0)
@@ -2622,8 +2612,8 @@ proc wrapStringProcs(g: var WebGen; w: var CallbackWrap) =
     for a in w.argExprs: args.add a
     w.argExprs = args
 
-proc wrapBody(g: var WebGen; w: CallbackWrap; callee: string): string =
-  ## The body of the JS function that calls the Nim proc `callee`. The wrapper
+proc wrapBody(g: var WebGen; w: CallbackWrap): string =
+  ## The body of the arrow function that wraps the Nim proc in `slot`. The wrapper
   ## owns a shadow stack frame of its own when it owns anything (a `string` or
   ## `cstring` argument or a `string` result), because the JS host may call
   ## after the Nim caller's frame is gone (a timer) or while another is live
@@ -2636,7 +2626,7 @@ proc wrapBody(g: var WebGen; w: CallbackWrap; callee: string): string =
   ## frame (`c0`, `c1`, … name their addresses in the call) and leave with it.
   ## The result is converted, then everything the wrapper owns is destroyed
   ## (the callee handed over its result's ownership).
-  let call = callee & "(" & w.argExprs.join(", ") & ")"
+  let call = "slot(" & w.argExprs.join(", ") & ")"
   let v = if w.retBridge.len > 0: w.retBridge & "(" & call & ")" else: call
   let nSlots = w.strArgs.len + (if w.strRet: 1 else: 0)
   if nSlots == 0 and w.cstrArgs.len == 0:
@@ -2659,6 +2649,12 @@ proc wrapBody(g: var WebGen; w: CallbackWrap; callee: string): string =
     for k in 0 ..< nSlots:
       result.add dn & "(f + " & $(8 * k) & "); "
   result.add "leave(); return v;"
+
+proc callbackMaker(name, body: string): string =
+  ## The JS function `name(slot)` that wraps the Nim proc `slot` (a table
+  ## entry) for the host: the arrow function running `body`. `cbWrap` calls it
+  ## once per table slot.
+  "function " & name & "(slot) { return (...a) => { " & body & " }; }\n"
 
 proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor) =
   ## Emit a JS callable for a Nim proc used as an `importjs` callback (rAF,
@@ -2683,35 +2679,23 @@ proc callbackBridge(g: var WebGen; t: Cursor; pt: Cursor) =
     genExpr(g, t)
     g.outp.closeTag
     return
+  # A wrapper bridges the JS call to the Nim proc. A named proc and a stored
+  # fn-ptr (a `callbackInfo.callback` field, a slot variable) take the same
+  # path: the operand evaluates to a table slot, and `cbWrap` builds the
+  # wrapper for a slot ONCE, so handing the same Nim proc to JS twice
+  # (addEventListener, then removeEventListener) gives JS the same function,
+  # from either site. `FTAB[h]` is the Nim proc itself, so only the arguments
+  # need converting. The extra arguments a host may pass (rAF's timestamp) are
+  # collected by the rest parameter and not forwarded. A capturing closure stays
+  # out of reach: jorogumo carries no environment.
   wrapStringProcs(g, w)
-  # A wrapper bridges the JS call to the Nim proc. A named proc bakes its slot
-  # in; a stored fn-ptr (a `callbackInfo.callback` field, a slot variable) is
-  # bridged around the value the operand evaluates to — `FTAB[h]` is the Nim
-  # proc itself, so only the arguments need converting. A capturing closure
-  # stays out of reach: jorogumo carries no environment.
-  let sym = operandProcSym(g, t)
-  if sym == SymId(0):
-    let name = "__cb" & $g.callbacks.len
-    g.callbacks.add "function " & name & "(slot) { return (...a) => { " &
-                    wrapBody(g, w, "slot") & " }; }\n"
-    g.outp.openTree Call
-    g.outp.ident name
-    g.outp.openTree Index
-    g.outp.ident "FTAB"
-    genExpr(g, t)
-    g.outp.closeTag
-    g.outp.closeTag
-    return
-  var found = false
-  let cdecl = procDeclOf(g, sym, found)
-  if not found: err g, "unknown callback proc: " & poolSym(g.lengPool, sym)
-  ensureProc(g, sym, cdecl)
   let name = "__cb" & $g.callbacks.len
-  # Rest args so the JS host may pass more (rAF's timestamp) than the Nim proc
-  # declares; the extras are simply not forwarded.
-  g.callbacks.add "function " & name & "(...a) { " &
-                  wrapBody(g, w, poolSym(g.irPool, irName(g, sym))) & " }\n"
+  g.callbacks.add callbackMaker(name, wrapBody(g, w))
+  g.outp.openTree Call
+  g.outp.ident "cbWrap"
+  genExpr(g, t)
   g.outp.ident name
+  g.outp.closeTag
 
 proc genCallArgs(g: var WebGen; decl: Cursor; t: var Cursor; splice = false) =
   ## Emit each argument from `t`, moved to the width `decl`'s parameter declares

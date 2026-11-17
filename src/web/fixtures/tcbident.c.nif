@@ -1,0 +1,60 @@
+(.nif27)
+(stmts@,1,tcbident.nim
+ (type :Obj.0.tcbident .
+  (object .
+   (fld :x.0 .
+    (i 32))))
+ (type :H.0.tcbident .
+  (ptr Obj.0.tcbident))
+ (type :Cb.0.tcbident .
+  (proctype .
+   (params
+    (param :p.0 . H.0.tcbident)) . .))
+ (gvar :live.0 . Cb.0.tcbident
+  (nil))
+ (proc :same.0.
+  (params
+   (param :a.0 . Cb.0.tcbident)
+   (param :b.0 . Cb.0.tcbident))
+  (i 32)
+  (pragmas
+   (importjs "(# === # ? 1 : 0)"))
+  (stmts .))
+ (proc :probe.0.
+  (params
+   (param :p.0 . H.0.tcbident))
+  .
+  .
+  (stmts .))
+ (proc :other.0.
+  (params
+   (param :p.0 . H.0.tcbident))
+  .
+  .
+  (stmts .))
+ (proc :main.0.
+  (params)
+  (i 32)
+  (pragmas
+   (exportc "main"))
+  (stmts
+   (asgn live.0 probe.0.)
+   (ret
+    (add
+     (i 32)
+     (add
+      (i 32)
+      (call same.0. probe.0. probe.0.)
+      (mul
+       (i 32)
+       (call same.0. live.0 probe.0.) 2))
+     (add
+      (i 32)
+      (mul
+       (i 32)
+       (call same.0. live.0 live.0) 4)
+      (mul
+       (i 32)
+       (sub
+        (i 32) 1
+        (call same.0. probe.0. other.0.)) 8))))))))
